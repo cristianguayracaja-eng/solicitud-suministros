@@ -39,10 +39,20 @@ async function apiList(prefix) {
   return data.keys || [];
 }
 
-// Estas tres funciones tienen la MISMA firma que las que usaba el artifact de
-// Claude (safeGet/safeSet/safeList), incluido el parámetro "shared" que aquí
-// se ignora porque ya no existe el concepto de almacenamiento personal vs.
-// compartido (no hay cuentas de usuario).
+async function apiDelete(key) {
+  const res = await fetch(API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "delete", key }),
+  });
+  if (!res.ok) throw new Error("delete failed");
+  return true;
+}
+
+// Estas cuatro funciones tienen la MISMA firma que las que usaba el artifact
+// de Claude (safeGet/safeSet/safeList/safeDelete), incluido el parámetro
+// "shared" que aquí se ignora porque ya no existe el concepto de
+// almacenamiento personal vs. compartido (no hay cuentas de usuario).
 export async function safeGet(key, _shared) {
   try {
     return await apiGet(key);
@@ -63,5 +73,13 @@ export async function safeList(prefix, _shared) {
     return await apiList(prefix);
   } catch (e) {
     return [];
+  }
+}
+export async function safeDelete(key, _shared) {
+  try {
+    await apiDelete(key);
+    return true;
+  } catch (e) {
+    return false;
   }
 }
