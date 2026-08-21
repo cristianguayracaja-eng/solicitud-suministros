@@ -5,7 +5,7 @@ import {
   RefreshCw, Users, Package, Store, Building2, User, ChevronDown, RotateCcw, PlayCircle, StopCircle
 } from "lucide-react";
 import * as XLSX from "xlsx";
-import { safeGet, safeSet, safeList } from "./api.js";
+import { safeGet, safeSet, safeList, safeDelete } from "./api.js";
 
 /* ==================================================================== */
 /* DATOS BASE                                                            */
@@ -269,7 +269,7 @@ export default function App() {
       // config (con migración desde versión anterior de una sola marca)
       let cfg = parseJSON(cfgRaw, null);
       if (!cfg) {
-        cfg = { activeFormat: "", periodSlug: "", periodLabel: "", adminPassword: DEFAULT_PASSWORD };
+        cfg = { activeFormat: "", periodSlug: "", periodLabel: "", periodDeadline: "", adminPassword: DEFAULT_PASSWORD };
         await safeSet(CONFIG_KEY, JSON.stringify(cfg), true);
       } else if (cfg.activeFormat === undefined) {
         cfg = {
@@ -480,16 +480,27 @@ function SelectionSummary({ allItems, quantities }) {
   );
 }
 
+function isDeadlinePassed(config) {
+  if (!config?.periodDeadline) return false;
+  const deadline = new Date(`${config.periodDeadline}T23:59:59`);
+  return new Date() > deadline;
+}
+
 function FormView({ config, data, onGoAdmin }) {
-  const hasActivePeriod = !!config?.activeFormat && !!config?.periodSlug;
+  const deadlinePassed = isDeadlinePassed(config);
+  const hasActivePeriod = !!config?.activeFormat && !!config?.periodSlug && !deadlinePassed;
 
   if (!hasActivePeriod) {
     return (
       <div className="max-w-lg mx-auto px-6 py-16 text-center">
         <AlertCircle className="w-8 h-8 mx-auto text-amber-600 mb-3" />
-        <h2 className="text-lg font-semibold text-stone-800">No hay una solicitud activa</h2>
+        <h2 className="text-lg font-semibold text-stone-800">
+          {deadlinePassed ? "Este periodo ya cerró" : "No hay una solicitud activa"}
+        </h2>
         <p className="text-sm text-stone-500 mt-2">
-          El administrador todavía no ha abierto la solicitud de suministros de este bimestre. Intenta más tarde.
+          {deadlinePassed
+            ? `La fecha límite para enviar solicitudes de "${config.periodLabel}" era el ${new Date(`${config.periodDeadline}T00:00:00`).toLocaleDateString("es-EC", { day: "numeric", month: "long", year: "numeric" })}. Contacta al administrador si necesitas una excepción.`
+            : "El administrador todavía no ha abierto la solicitud de suministros de este bimestre. Intenta más tarde."}
         </p>
         <button onClick={onGoAdmin} className="mt-8 text-xs text-stone-400 hover:text-stone-600 underline underline-offset-2">
           Acceso administración
@@ -1426,6 +1437,8 @@ function ItemsManager({ items, onChange, idPrefix }) {
 function ConfigTab({ config, data, onConfigChange }) {
   const [newFormat, setNewFormat] = useState("CARTIMEX");
   const [periodLabel, setPeriodLabel] = useState("");
+  const [periodDeadline, setPeriodDeadline] = useState("");
+  const [editDeadlineValue, setEditDeadlineValue] = useState(config.periodDeadline || "");
   const [pw1, setPw1] = useState("");
   const [pw2, setPw2] = useState("");
   const [msg, setMsg] = useState("");
@@ -1450,30 +1463,68 @@ function ConfigTab({ config, data, onConfigChange }) {
   const activeEntitiesCount = config.activeFormat === "CARTIMEX" ? data.cartimexAreas.length
     : config.activeFormat === "COMPUTRON" ? data.computronTiendas.length : null;
 
+  const deadlinePassed = isDeadlinePassed(config);
+
+  const persistPeriodsList = async (list) => {
+    await safeSet(PERIODS_KEY, JSON.stringify(list), true);
+    setPeriodsList(list);
+  };
+
   const openNewPeriod = async () => {
     if (!periodLabel.trim()) return;
     const slug = slugify(periodLabel) || `PERIODO-${Date.now()}`;
-    const next = { ...config, activeFormat: newFormat, periodSlug: slug, periodLabel: periodLabel.trim() };
+    const next = { ...config, activeFormat: newFormat, periodSlug: slug, periodLabel: periodLabel.trim(), periodDeadline: periodDeadline || "" };
     await onConfigChange(next);
+    setEditDeadlineValue(periodDeadline || "");
 
     const list = parseJSON(await safeGet(PERIODS_KEY, true), []);
-    if (!list.find((p) => p.format === newFormat && p.slug === slug)) {
-      list.push({ format: newFormat, slug, label: periodLabel.trim() });
-      await safeSet(PERIODS_KEY, JSON.stringify(list), true);
-      setPeriodsList(list);
-    }
+    const idx = list.findIndex((p) => p.format === newFormat && p.slug === slug);
+    const entry = { format: newFormat, slug, label: periodLabel.trim(), deadline: periodDeadline || "" };
+    if (idx === -1) list.push(entry); else list[idx] = entry;
+    await persistPeriodsList(list);
+
     setPeriodLabel("");
+    setPeriodDeadline("");
     setMsg(`Periodo de ${newFormat} abierto. El formulario ya muestra ese formato a quien abra el link.`);
   };
 
   const closePeriod = async () => {
-    await onConfigChange({ ...config, activeFormat: "", periodSlug: "", periodLabel: "" });
+    await onConfigChange({ ...config, activeFormat: "", periodSlug: "", periodLabel: "", periodDeadline: "" });
     setMsg("Periodo cerrado. Nadie podrá enviar solicitudes hasta que abras uno nuevo o reabras uno anterior.");
   };
 
   const reopenPeriod = async (p) => {
-    await onConfigChange({ ...config, activeFormat: p.format, periodSlug: p.slug, periodLabel: p.label });
+    await onConfigChange({ ...config, activeFormat: p.format, periodSlug: p.slug, periodLabel: p.label, periodDeadline: p.deadline || "" });
+    setEditDeadlineValue(p.deadline || "");
     setMsg(`Periodo "${p.label}" reabierto. Los jefes que ya habían enviado en ese periodo seguirán marcados como enviados; los que falten podrán completar su solicitud.`);
+  };
+
+  const updateDeadline = async () => {
+    await onConfigChange({ ...config, periodDeadline: editDeadlineValue || "" });
+    const list = periodsList.map((p) =>
+      p.format === config.activeFormat && p.slug === config.periodSlug ? { ...p, deadline: editDeadlineValue || "" } : p
+    );
+    await persistPeriodsList(list);
+    setMsg(editDeadlineValue ? "Fecha límite actualizada." : "Fecha límite quitada. El periodo ya no se cerrará automáticamente.");
+  };
+
+  const deletePeriod = async (p) => {
+    const isActive = config.activeFormat === p.format && config.periodSlug === p.slug;
+    const confirmMsg = isActive
+      ? `"${p.label}" es el periodo ACTUALMENTE ABIERTO. Se eliminará junto con todas sus solicitudes y el formulario quedará cerrado. ¿Continuar?`
+      : `Se eliminará el periodo "${p.label}" y TODAS sus solicitudes enviadas. Esta acción no se puede deshacer. ¿Continuar?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    const keys = await safeList(`submission:${p.format}:${p.slug}:`, true);
+    for (const k of keys) await safeDelete(k, true);
+
+    const list = periodsList.filter((x) => !(x.format === p.format && x.slug === p.slug));
+    await persistPeriodsList(list);
+
+    if (isActive) {
+      await onConfigChange({ ...config, activeFormat: "", periodSlug: "", periodLabel: "", periodDeadline: "" });
+    }
+    setMsg(`Periodo "${p.label}" eliminado junto con ${keys.length} solicitud${keys.length !== 1 ? "es" : ""}.`);
   };
 
   const changePassword = async () => {
@@ -1484,27 +1535,44 @@ function ConfigTab({ config, data, onConfigChange }) {
     setMsg("Contraseña actualizada.");
   };
 
-  const reopenCandidates = periodsList.filter(
-    (p) => p.format === newFormat && !(config.activeFormat === p.format && config.periodSlug === p.slug)
-  );
+  const candidatesForFormat = periodsList.filter((p) => p.format === newFormat);
 
   return (
     <div className="max-w-xl space-y-8">
       <div>
         <h3 className="text-sm font-semibold text-stone-800 flex items-center gap-1.5"><ClipboardList className="w-4 h-4" /> Periodo del formulario</h3>
 
-        <div className={`mt-2 rounded-lg border px-3 py-2.5 text-sm ${config.activeFormat ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-stone-200 bg-stone-50 text-stone-500"}`}>
+        <div className={`mt-2 rounded-lg border px-3 py-2.5 text-sm ${config.activeFormat && !deadlinePassed ? "border-emerald-200 bg-emerald-50 text-emerald-800" : config.activeFormat && deadlinePassed ? "border-red-200 bg-red-50 text-red-700" : "border-stone-200 bg-stone-50 text-stone-500"}`}>
           {config.activeFormat
-            ? <>Abierto ahora: <span className="font-semibold">{config.activeFormat}</span> · <span className="font-semibold">{config.periodLabel}</span>{respondedCount !== null && <> · {respondedCount} de {activeEntitiesCount} han enviado</>}</>
+            ? <>
+                {deadlinePassed ? "Cerrado automáticamente: " : "Abierto ahora: "}
+                <span className="font-semibold">{config.activeFormat}</span> · <span className="font-semibold">{config.periodLabel}</span>
+                {respondedCount !== null && <> · {respondedCount} de {activeEntitiesCount} han enviado</>}
+                {config.periodDeadline && <> · Fecha límite: {new Date(`${config.periodDeadline}T00:00:00`).toLocaleDateString("es-EC", { day: "numeric", month: "short", year: "numeric" })}</>}
+              </>
             : "No hay ningún periodo abierto. El link no dejará enviar solicitudes."}
         </div>
 
         {config.activeFormat && (
-          <button onClick={closePeriod}
-            className="mt-3 flex items-center gap-1.5 border border-red-200 text-red-600 hover:bg-red-50 text-sm font-medium rounded-lg px-3.5 py-2 transition-colors">
-            <StopCircle className="w-4 h-4" /> Cerrar periodo actual
-          </button>
+          <div className="mt-3 flex flex-wrap items-end gap-2">
+            <div>
+              <label className="text-[11px] font-semibold text-stone-500 uppercase tracking-wide block mb-1">Fecha límite (opcional)</label>
+              <input type="date" value={editDeadlineValue} onChange={(e) => setEditDeadlineValue(e.target.value)}
+                className="border border-stone-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500" />
+            </div>
+            <button onClick={updateDeadline}
+              className="border border-stone-300 text-stone-600 hover:bg-stone-50 text-sm font-medium rounded-lg px-3.5 py-2 transition-colors">
+              Guardar fecha límite
+            </button>
+            <button onClick={closePeriod}
+              className="flex items-center gap-1.5 border border-red-200 text-red-600 hover:bg-red-50 text-sm font-medium rounded-lg px-3.5 py-2 transition-colors">
+              <StopCircle className="w-4 h-4" /> Cerrar periodo ahora
+            </button>
+          </div>
         )}
+        <p className="text-[11px] text-stone-400 mt-1.5">
+          Si pones una fecha límite, el formulario deja de aceptar solicitudes automáticamente al terminar ese día, sin que tengas que entrar a cerrarlo.
+        </p>
 
         <div className="mt-6">
           <label className="text-xs font-semibold text-stone-500 uppercase tracking-wide block mb-1">Marca</label>
@@ -1512,34 +1580,50 @@ function ConfigTab({ config, data, onConfigChange }) {
         </div>
 
         <p className="text-xs font-semibold text-stone-600 mt-5">Abrir un periodo nuevo</p>
-        <div className="flex gap-2 mt-1.5">
+        <div className="flex flex-wrap gap-2 mt-1.5">
           <input value={periodLabel} onChange={(e) => setPeriodLabel(e.target.value)} placeholder="Ej: Agosto 2026 - Bimestre 2"
-            className="flex-1 border border-stone-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500" />
+            className="flex-1 min-w-[180px] border border-stone-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500" />
+          <input type="date" value={periodDeadline} onChange={(e) => setPeriodDeadline(e.target.value)} title="Fecha límite (opcional)"
+            className="border border-stone-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500" />
           <button onClick={openNewPeriod}
             className="flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg px-4 py-2 whitespace-nowrap transition-colors">
             <PlayCircle className="w-4 h-4" /> Abrir periodo
           </button>
         </div>
+        <p className="text-[11px] text-stone-400 mt-1">La fecha es opcional — si la dejas vacía, el periodo queda abierto hasta que tú lo cierres manualmente.</p>
 
-        {reopenCandidates.length > 0 && (
+        {candidatesForFormat.length > 0 && (
           <div className="mt-5">
-            <p className="text-xs font-semibold text-stone-600 mb-1.5">Reabrir un periodo anterior de {newFormat}</p>
-            <p className="text-[11px] text-stone-400 mb-2">Útil para casos excepcionales, por ejemplo si una tienda necesita corregir o completar su envío.</p>
+            <p className="text-xs font-semibold text-stone-600 mb-1.5">Periodos de {newFormat}</p>
+            <p className="text-[11px] text-stone-400 mb-2">Reabre uno para editarlo, o elimínalo si fue una prueba (borra también sus solicitudes).</p>
             <div className="border border-stone-200 rounded-lg divide-y divide-stone-100">
-              {reopenCandidates.map((p) => (
-                <div key={p.slug} className="flex items-center justify-between px-3 py-2 text-sm">
-                  <span className="text-stone-700">{p.label}</span>
-                  <button onClick={() => reopenPeriod(p)}
-                    className="flex items-center gap-1 text-xs font-medium text-amber-700 hover:text-amber-800">
-                    <RotateCcw className="w-3.5 h-3.5" /> Reabrir
-                  </button>
-                </div>
-              ))}
+              {candidatesForFormat.map((p) => {
+                const isActive = config.activeFormat === p.format && config.periodSlug === p.slug;
+                return (
+                  <div key={p.slug} className="flex items-center justify-between px-3 py-2 text-sm gap-2">
+                    <span className={`truncate ${isActive ? "font-semibold text-stone-800" : "text-stone-700"}`}>
+                      {p.label}{isActive && <span className="ml-1.5 text-[10px] font-medium text-emerald-700">· actual</span>}
+                    </span>
+                    <div className="flex items-center gap-3 shrink-0">
+                      {!isActive && (
+                        <button onClick={() => reopenPeriod(p)}
+                          className="flex items-center gap-1 text-xs font-medium text-amber-700 hover:text-amber-800">
+                          <RotateCcw className="w-3.5 h-3.5" /> Reabrir
+                        </button>
+                      )}
+                      <button onClick={() => deletePeriod(p)}
+                        className="flex items-center gap-1 text-xs font-medium text-stone-400 hover:text-red-600">
+                        <Trash2 className="w-3.5 h-3.5" /> Eliminar
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
 
-        <p className="text-[11px] text-stone-400 mt-4">Solo un formato puede estar activo a la vez. Los datos ya enviados nunca se pierden al cerrar o cambiar de periodo.</p>
+        <p className="text-[11px] text-stone-400 mt-4">Solo un formato puede estar activo a la vez. Los datos ya enviados nunca se pierden al cerrar o cambiar de periodo (a menos que elimines el periodo explícitamente).</p>
       </div>
 
       <div>
