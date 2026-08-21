@@ -254,8 +254,20 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
+      // Todas las lecturas iniciales en paralelo (antes eran 6-7 peticiones
+      // en fila, una esperando a la otra — esto acelera bastante la carga).
+      const [cfgRaw, areasRaw, cItemsRaw, legacyItemsRaw, tiendasRaw, ofcRaw, lmpRaw] = await Promise.all([
+        safeGet(CONFIG_KEY, true),
+        safeGet(CARTIMEX_AREAS_KEY, true),
+        safeGet(CARTIMEX_ITEMS_KEY, true),
+        safeGet("items-list", true), // migración desde versión antigua
+        safeGet(COMPUTRON_TIENDAS_KEY, true),
+        safeGet(COMPUTRON_ITEMS_OFICINA_KEY, true),
+        safeGet(COMPUTRON_ITEMS_LIMPIEZA_KEY, true),
+      ]);
+
       // config (con migración desde versión anterior de una sola marca)
-      let cfg = parseJSON(await safeGet(CONFIG_KEY, true), null);
+      let cfg = parseJSON(cfgRaw, null);
       if (!cfg) {
         cfg = { activeFormat: "", periodSlug: "", periodLabel: "", adminPassword: DEFAULT_PASSWORD };
         await safeSet(CONFIG_KEY, JSON.stringify(cfg), true);
@@ -271,20 +283,20 @@ export default function App() {
       setConfig(cfg);
 
       // cartimex areas
-      let areas = parseJSON(await safeGet(CARTIMEX_AREAS_KEY, true), null);
+      let areas = parseJSON(areasRaw, null);
       if (!areas) { areas = CARTIMEX_AREAS_DEFAULT; await safeSet(CARTIMEX_AREAS_KEY, JSON.stringify(areas), true); }
       setCartimexAreas(areas);
 
       // cartimex items (con migración desde 'items-list')
-      let citems = parseJSON(await safeGet(CARTIMEX_ITEMS_KEY, true), null);
+      let citems = parseJSON(cItemsRaw, null);
       if (!citems) {
-        citems = parseJSON(await safeGet("items-list", true), null) || CARTIMEX_ITEMS_DEFAULT;
+        citems = parseJSON(legacyItemsRaw, null) || CARTIMEX_ITEMS_DEFAULT;
         await safeSet(CARTIMEX_ITEMS_KEY, JSON.stringify(citems), true);
       }
       setCartimexItems(citems);
 
       // computron tiendas
-      let tiendas = parseJSON(await safeGet(COMPUTRON_TIENDAS_KEY, true), null);
+      let tiendas = parseJSON(tiendasRaw, null);
       if (!tiendas) {
         tiendas = COMPUTRON_TIENDAS_LABELS.map((label) => ({ id: slugify(label), label }));
         await safeSet(COMPUTRON_TIENDAS_KEY, JSON.stringify(tiendas), true);
@@ -292,12 +304,12 @@ export default function App() {
       setComputronTiendas(tiendas);
 
       // computron items oficina
-      let ofc = parseJSON(await safeGet(COMPUTRON_ITEMS_OFICINA_KEY, true), null);
+      let ofc = parseJSON(ofcRaw, null);
       if (!ofc) { ofc = COMPUTRON_ITEMS_OFICINA_DEFAULT; await safeSet(COMPUTRON_ITEMS_OFICINA_KEY, JSON.stringify(ofc), true); }
       setComputronItemsOficina(ofc);
 
       // computron items limpieza
-      let lmp = parseJSON(await safeGet(COMPUTRON_ITEMS_LIMPIEZA_KEY, true), null);
+      let lmp = parseJSON(lmpRaw, null);
       if (!lmp) { lmp = COMPUTRON_ITEMS_LIMPIEZA_DEFAULT; await safeSet(COMPUTRON_ITEMS_LIMPIEZA_KEY, JSON.stringify(lmp), true); }
       setComputronItemsLimpieza(lmp);
 
