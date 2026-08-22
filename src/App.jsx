@@ -149,6 +149,13 @@ const COMPUTRON_ITEMS_LIMPIEZA_DEFAULT = COMPUTRON_ITEMS_LIMPIEZA_RAW.map(([nume
 
 const DEFAULT_PASSWORD = "suministros2026";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const CARTIMEX_EMAIL_DOMAIN = "cartimex.com";
+const COMPUTRON_EMAIL_DOMAIN = "compu-tron.net";
+
+function isCompanyEmail(email, domain) {
+  const e = (email || "").trim().toLowerCase();
+  return EMAIL_RE.test(e) && e.endsWith(`@${domain.toLowerCase()}`);
+}
 
 const THEME = {
   CARTIMEX: {
@@ -363,7 +370,7 @@ export default function App() {
 /* FORM VIEW (jefes de tienda / departamento)                            */
 /* ==================================================================== */
 
-function PersonalInfoFields({ nombre, apellido, correo, setNombre, setApellido, setCorreo, correoError, theme }) {
+function PersonalInfoFields({ nombre, apellido, correo, setNombre, setApellido, setCorreo, correoError, theme, emailDomain }) {
   const ring = theme ? theme.ring : "focus:ring-amber-500 focus:border-amber-500";
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -379,8 +386,9 @@ function PersonalInfoFields({ nombre, apellido, correo, setNombre, setApellido, 
       </div>
       <div className="sm:col-span-2">
         <label className="text-xs font-semibold text-stone-500 uppercase tracking-wide">Correo electrónico</label>
-        <input value={correo} onChange={(e) => setCorreo(e.target.value)} placeholder="correo@empresa.com" type="email"
+        <input value={correo} onChange={(e) => setCorreo(e.target.value)} placeholder={emailDomain ? `nombre@${emailDomain}` : "correo@empresa.com"} type="email"
           className={`mt-1.5 w-full border border-stone-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 ${ring}`} />
+        {emailDomain && <p className="text-[11px] text-stone-400 mt-1">Debe ser tu correo institucional, terminado en @{emailDomain}</p>}
         {correoError && <p className="text-xs text-red-600 mt-1">{correoError}</p>}
       </div>
     </div>
@@ -666,12 +674,12 @@ function CartimexForm({ config, areas, items, onGoAdmin }) {
   const selectedCount = useMemo(() => items.filter((it) => (parseInt(quantities[it.id], 10) || 0) > 0).length, [items, quantities]);
   const areaLabel = areas.find((a) => a.id === areaId)?.label || areaId;
 
-  const infoComplete = nombre.trim() && apellido.trim() && EMAIL_RE.test(correo.trim());
+  const infoComplete = nombre.trim() && apellido.trim() && isCompanyEmail(correo, CARTIMEX_EMAIL_DOMAIN);
 
   const validate = () => {
     setError("");
     if (!nombre.trim() || !apellido.trim()) { setError("Ingresa tu nombre y apellido."); return false; }
-    if (!EMAIL_RE.test(correo.trim())) { setError("Ingresa un correo válido."); return false; }
+    if (!isCompanyEmail(correo, CARTIMEX_EMAIL_DOMAIN)) { setError(`Ingresa tu correo institucional, terminado en @${CARTIMEX_EMAIL_DOMAIN}.`); return false; }
     if (!areaId) { setError("Selecciona tu departamento."); return false; }
     const any = Object.values(quantities).some((v) => (parseInt(v, 10) || 0) > 0);
     if (!any) { setError("Ingresa al menos una cantidad mayor a 0."); return false; }
@@ -706,7 +714,7 @@ function CartimexForm({ config, areas, items, onGoAdmin }) {
     <div className={`max-w-2xl mx-auto ${showItems ? "pb-28" : "pb-16"}`}>
       <FormHeader subtitle="CARTIMEX · OFICINA" periodLabel={config.periodLabel} stamp={<>SOLIC.<br/>INTERNA</>} theme={theme} />
       <div className="px-6 pt-6">
-        <PersonalInfoFields nombre={nombre} apellido={apellido} correo={correo} setNombre={setNombre} setApellido={setApellido} setCorreo={setCorreo} theme={theme} />
+        <PersonalInfoFields nombre={nombre} apellido={apellido} correo={correo} setNombre={setNombre} setApellido={setApellido} setCorreo={setCorreo} theme={theme} emailDomain={CARTIMEX_EMAIL_DOMAIN} />
 
         <label className="text-xs font-semibold text-stone-500 uppercase tracking-wide block mt-5">Departamento</label>
         <select value={areaId} onChange={(e) => { setAreaId(e.target.value); setQuantities({}); setObservaciones(""); setError(""); }}
@@ -779,12 +787,12 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
   const allItems = useMemo(() => [...itemsOficina, ...itemsLimpieza], [itemsOficina, itemsLimpieza]);
   const selectedCount = useMemo(() => allItems.filter((it) => (parseInt(quantities[it.id], 10) || 0) > 0).length, [allItems, quantities]);
   const tiendaLabel = tiendas.find((t) => t.id === tiendaId)?.label || tiendaId;
-  const infoComplete = nombre.trim() && apellido.trim() && EMAIL_RE.test(correo.trim());
+  const infoComplete = nombre.trim() && apellido.trim() && isCompanyEmail(correo, COMPUTRON_EMAIL_DOMAIN);
 
   const validate = () => {
     setError("");
     if (!nombre.trim() || !apellido.trim()) { setError("Ingresa tu nombre y apellido."); return false; }
-    if (!EMAIL_RE.test(correo.trim())) { setError("Ingresa un correo válido."); return false; }
+    if (!isCompanyEmail(correo, COMPUTRON_EMAIL_DOMAIN)) { setError(`Ingresa tu correo institucional, terminado en @${COMPUTRON_EMAIL_DOMAIN}.`); return false; }
     if (!tiendaId) { setError("Selecciona tu tienda."); return false; }
     const any = Object.values(quantities).some((v) => (parseInt(v, 10) || 0) > 0);
     if (!any) { setError("Ingresa al menos una cantidad mayor a 0 (Oficina o Limpieza)."); return false; }
@@ -819,7 +827,7 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
     <div className={`max-w-2xl mx-auto ${showItems ? "pb-28" : "pb-16"}`}>
       <FormHeader subtitle="COMPUTRON · TIENDAS" periodLabel={config.periodLabel} stamp={<>SOLIC.<br/>TIENDA</>} theme={theme} />
       <div className="px-6 pt-6">
-        <PersonalInfoFields nombre={nombre} apellido={apellido} correo={correo} setNombre={setNombre} setApellido={setApellido} setCorreo={setCorreo} theme={theme} />
+        <PersonalInfoFields nombre={nombre} apellido={apellido} correo={correo} setNombre={setNombre} setApellido={setApellido} setCorreo={setCorreo} theme={theme} emailDomain={COMPUTRON_EMAIL_DOMAIN} />
 
         <label className="text-xs font-semibold text-stone-500 uppercase tracking-wide block mt-5">Tienda</label>
         <select value={tiendaId} onChange={(e) => { setTiendaId(e.target.value); setQuantities({}); setObservaciones(""); setError(""); }}
