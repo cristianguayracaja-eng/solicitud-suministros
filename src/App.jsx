@@ -636,13 +636,13 @@ function FloatingSubmitBar({ theme, count, error, onSubmit, disabled }) {
   );
 }
 
-function FormHeader({ subtitle, periodLabel, stamp, theme, logo, logoAlt }) {
+function FormHeader({ subtitle, periodLabel, stamp, theme, logo, logoAlt, logoClassName }) {
   const t = theme || THEME.CARTIMEX;
   return (
     <div className="border-b-2 border-dashed border-stone-300 bg-white">
       <div className="px-6 pt-6 flex items-start justify-between">
         <div>
-          {logo && <img src={logo} alt={logoAlt} className="max-h-9 max-w-[180px] w-auto h-auto object-contain mb-2.5" />}
+          {logo && <img src={logo} alt={logoAlt} className={`${logoClassName || "max-h-9 max-w-[180px]"} w-auto h-auto object-contain mb-2.5`} />}
           <p className={`text-[11px] tracking-[0.2em] font-semibold ${t.subtitleText}`}>{subtitle}</p>
           <h1 className="text-xl font-bold text-stone-800 mt-0.5">Solicitud de Suministros</h1>
           <p className="text-xs text-stone-500 mt-1">Periodo: <span className="font-medium text-stone-700">{periodLabel}</span></p>
@@ -716,7 +716,7 @@ function CartimexForm({ config, areas, items, onGoAdmin }) {
 
   return (
     <div className={`max-w-2xl mx-auto ${showItems ? "pb-28" : "pb-16"}`}>
-      <FormHeader subtitle="CARTIMEX · OFICINA" periodLabel={config.periodLabel} stamp={<>SOLIC.<br/>INTERNA</>} theme={theme} logo={LOGO_CARTIMEX} logoAlt="Cartimex" />
+      <FormHeader subtitle="CARTIMEX · OFICINA" periodLabel={config.periodLabel} stamp={<>SOLIC.<br/>INTERNA</>} theme={theme} logo={LOGO_CARTIMEX} logoAlt="Cartimex" logoClassName="max-h-16 max-w-[150px]" />
       <div className="px-6 pt-6">
         <PersonalInfoFields nombre={nombre} apellido={apellido} correo={correo} setNombre={setNombre} setApellido={setApellido} setCorreo={setCorreo} theme={theme} emailDomain={CARTIMEX_EMAIL_DOMAIN} />
 
