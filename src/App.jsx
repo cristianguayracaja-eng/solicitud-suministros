@@ -540,6 +540,53 @@ function useExistingCheck(format, periodSlug, entityId) {
   return { checking, existing };
 }
 
+// Revisa si el CORREO ya envió alguna solicitud en este periodo, sin
+// importar qué departamento/tienda haya elegido esa vez.
+async function findSubmissionByEmail(format, periodSlug, correo) {
+  const target = (correo || "").trim().toLowerCase();
+  if (!target) return null;
+  const keys = await safeList(`submission:${format}:${periodSlug}:`, true);
+  for (const k of keys) {
+    const raw = await safeGet(k, true);
+    const rec = parseJSON(raw, null);
+    if (rec && (rec.correo || "").trim().toLowerCase() === target) return rec;
+  }
+  return null;
+}
+
+function useEmailAlreadySubmitted(format, periodSlug, correo, emailValid) {
+  const [checking, setChecking] = useState(false);
+  const [existing, setExisting] = useState(null);
+  useEffect(() => {
+    if (!emailValid || !periodSlug) { setExisting(null); return; }
+    let cancelled = false;
+    (async () => {
+      setChecking(true);
+      const found = await findSubmissionByEmail(format, periodSlug, correo);
+      if (!cancelled) { setExisting(found); setChecking(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [format, periodSlug, correo, emailValid]);
+  return { checking, existing };
+}
+
+function AlreadySubmittedByEmailBanner({ existing }) {
+  return (
+    <div className="mt-5 rounded-lg border border-amber-300 bg-amber-50 px-4 py-4">
+      <div className="flex items-start gap-2">
+        <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+        <div>
+          <p className="text-sm font-medium text-amber-800">Ya enviaste una solicitud con este correo para este periodo.</p>
+          <p className="text-xs text-amber-700 mt-1">
+            La enviaste a nombre de <span className="font-semibold">{existing.entityLabel}</span> el {new Date(existing.date).toLocaleString("es-EC")}.
+            Solo se permite un envío por persona por periodo. Si necesitas corregirla o enviar otra en nombre de un departamento/tienda distinto, contacta al administrador.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AlreadySubmittedBanner({ existing }) {
   return (
     <div className="mt-5 rounded-lg border border-amber-300 bg-amber-50 px-4 py-4">
@@ -670,6 +717,9 @@ function CartimexForm({ config, areas, items, onGoAdmin }) {
 
   const { checking, existing } = useExistingCheck("CARTIMEX", config.periodSlug, areaId);
 
+  const infoComplete = nombre.trim() && apellido.trim() && isCompanyEmail(correo, CARTIMEX_EMAIL_DOMAIN);
+  const { checking: checkingEmail, existing: existingByEmail } = useEmailAlreadySubmitted("CARTIMEX", config.periodSlug, correo, infoComplete);
+
   const setQty = (id, val) => {
     const n = val === "" ? "" : Math.max(0, parseInt(val, 10) || 0);
     setQuantities((prev) => ({ ...prev, [id]: n }));
@@ -678,12 +728,11 @@ function CartimexForm({ config, areas, items, onGoAdmin }) {
   const selectedCount = useMemo(() => items.filter((it) => (parseInt(quantities[it.id], 10) || 0) > 0).length, [items, quantities]);
   const areaLabel = areas.find((a) => a.id === areaId)?.label || areaId;
 
-  const infoComplete = nombre.trim() && apellido.trim() && isCompanyEmail(correo, CARTIMEX_EMAIL_DOMAIN);
-
   const validate = () => {
     setError("");
     if (!nombre.trim() || !apellido.trim()) { setError("Ingresa tu nombre y apellido."); return false; }
     if (!isCompanyEmail(correo, CARTIMEX_EMAIL_DOMAIN)) { setError(`Ingresa tu correo institucional, terminado en @${CARTIMEX_EMAIL_DOMAIN}.`); return false; }
+    if (existingByEmail) { setError("Ya enviaste una solicitud con este correo para este periodo."); return false; }
     if (!areaId) { setError("Selecciona tu departamento."); return false; }
     const any = Object.values(quantities).some((v) => (parseInt(v, 10) || 0) > 0);
     if (!any) { setError("Ingresa al menos una cantidad mayor a 0."); return false; }
@@ -693,6 +742,14 @@ function CartimexForm({ config, areas, items, onGoAdmin }) {
   const handleReview = () => { if (validate()) setShowConfirm(true); };
 
   const confirmSubmit = async () => {
+    // Verificación final justo antes de guardar, por si abrió dos pestañas a la vez.
+    const dupe = await findSubmissionByEmail("CARTIMEX", config.periodSlug, correo);
+    if (dupe) {
+      setShowConfirm(false);
+      setError("Ya enviaste una solicitud con este correo para este periodo.");
+      return;
+    }
+
     const clean = {};
     Object.entries(quantities).forEach(([k, v]) => { const n = parseInt(v, 10) || 0; if (n > 0) clean[k] = n; });
 
@@ -712,7 +769,8 @@ function CartimexForm({ config, areas, items, onGoAdmin }) {
   if (done) return <DoneScreen entityLabel={areaLabel} periodLabel={config.periodLabel} total={total} />;
 
   const theme = THEME.CARTIMEX;
-  const showItems = !checking && areaId && !existing;
+  const canPickEntity = infoComplete && !checkingEmail && !existingByEmail;
+  const showItems = canPickEntity && !checking && areaId && !existing;
 
   return (
     <div className={`max-w-2xl mx-auto ${showItems ? "pb-28" : "pb-16"}`}>
@@ -720,16 +778,32 @@ function CartimexForm({ config, areas, items, onGoAdmin }) {
       <div className="px-6 pt-6">
         <PersonalInfoFields nombre={nombre} apellido={apellido} correo={correo} setNombre={setNombre} setApellido={setApellido} setCorreo={setCorreo} theme={theme} emailDomain={CARTIMEX_EMAIL_DOMAIN} />
 
-        <label className="text-xs font-semibold text-stone-500 uppercase tracking-wide block mt-5">Departamento</label>
-        <select value={areaId} onChange={(e) => { setAreaId(e.target.value); setQuantities({}); setObservaciones(""); setError(""); }}
-          disabled={!infoComplete}
-          className={`mt-1.5 w-full border border-stone-300 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 ${theme.ring} disabled:bg-stone-100 disabled:text-stone-400`}>
-          <option value="">{infoComplete ? "Selecciona tu departamento..." : "Completa tus datos primero"}</option>
-          {areas.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
-        </select>
+        {infoComplete && checkingEmail && <p className="text-xs text-stone-400 mt-3">Verificando tu correo...</p>}
+        {infoComplete && !checkingEmail && existingByEmail && <AlreadySubmittedByEmailBanner existing={existingByEmail} />}
 
-        {checking && <p className="text-xs text-stone-400 mt-3">Verificando...</p>}
-        {!checking && areaId && existing && <AlreadySubmittedBanner existing={existing} />}
+        {canPickEntity && (
+          <>
+            <label className="text-xs font-semibold text-stone-500 uppercase tracking-wide block mt-5">Departamento</label>
+            <select value={areaId} onChange={(e) => { setAreaId(e.target.value); setQuantities({}); setObservaciones(""); setError(""); }}
+              className={`mt-1.5 w-full border border-stone-300 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 ${theme.ring}`}>
+              <option value="">Selecciona tu departamento...</option>
+              {areas.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+            </select>
+          </>
+        )}
+
+        {!infoComplete && (
+          <>
+            <label className="text-xs font-semibold text-stone-500 uppercase tracking-wide block mt-5">Departamento</label>
+            <select disabled
+              className="mt-1.5 w-full border border-stone-300 rounded-lg px-3 py-2.5 text-sm bg-stone-100 text-stone-400">
+              <option>Completa tus datos primero</option>
+            </select>
+          </>
+        )}
+
+        {canPickEntity && checking && <p className="text-xs text-stone-400 mt-3">Verificando...</p>}
+        {canPickEntity && !checking && areaId && existing && <AlreadySubmittedBanner existing={existing} />}
 
         {showItems && (
           <>
@@ -783,6 +857,9 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
 
   const { checking, existing } = useExistingCheck("COMPUTRON", config.periodSlug, tiendaId);
 
+  const infoComplete = nombre.trim() && apellido.trim() && isCompanyEmail(correo, COMPUTRON_EMAIL_DOMAIN);
+  const { checking: checkingEmail, existing: existingByEmail } = useEmailAlreadySubmitted("COMPUTRON", config.periodSlug, correo, infoComplete);
+
   const setQty = (id, val) => {
     const n = val === "" ? "" : Math.max(0, parseInt(val, 10) || 0);
     setQuantities((prev) => ({ ...prev, [id]: n }));
@@ -791,12 +868,12 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
   const allItems = useMemo(() => [...itemsOficina, ...itemsLimpieza], [itemsOficina, itemsLimpieza]);
   const selectedCount = useMemo(() => allItems.filter((it) => (parseInt(quantities[it.id], 10) || 0) > 0).length, [allItems, quantities]);
   const tiendaLabel = tiendas.find((t) => t.id === tiendaId)?.label || tiendaId;
-  const infoComplete = nombre.trim() && apellido.trim() && isCompanyEmail(correo, COMPUTRON_EMAIL_DOMAIN);
 
   const validate = () => {
     setError("");
     if (!nombre.trim() || !apellido.trim()) { setError("Ingresa tu nombre y apellido."); return false; }
     if (!isCompanyEmail(correo, COMPUTRON_EMAIL_DOMAIN)) { setError(`Ingresa tu correo institucional, terminado en @${COMPUTRON_EMAIL_DOMAIN}.`); return false; }
+    if (existingByEmail) { setError("Ya enviaste una solicitud con este correo para este periodo."); return false; }
     if (!tiendaId) { setError("Selecciona tu tienda."); return false; }
     const any = Object.values(quantities).some((v) => (parseInt(v, 10) || 0) > 0);
     if (!any) { setError("Ingresa al menos una cantidad mayor a 0 (Oficina o Limpieza)."); return false; }
@@ -806,6 +883,13 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
   const handleReview = () => { if (validate()) setShowConfirm(true); };
 
   const confirmSubmit = async () => {
+    const dupe = await findSubmissionByEmail("COMPUTRON", config.periodSlug, correo);
+    if (dupe) {
+      setShowConfirm(false);
+      setError("Ya enviaste una solicitud con este correo para este periodo.");
+      return;
+    }
+
     const clean = {};
     Object.entries(quantities).forEach(([k, v]) => { const n = parseInt(v, 10) || 0; if (n > 0) clean[k] = n; });
 
@@ -825,7 +909,8 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
   if (done) return <DoneScreen entityLabel={tiendaLabel} periodLabel={config.periodLabel} total={total} />;
 
   const theme = THEME.COMPUTRON;
-  const showItems = !checking && tiendaId && !existing;
+  const canPickEntity = infoComplete && !checkingEmail && !existingByEmail;
+  const showItems = canPickEntity && !checking && tiendaId && !existing;
 
   return (
     <div className={`max-w-2xl mx-auto ${showItems ? "pb-28" : "pb-16"}`}>
@@ -833,16 +918,32 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
       <div className="px-6 pt-6">
         <PersonalInfoFields nombre={nombre} apellido={apellido} correo={correo} setNombre={setNombre} setApellido={setApellido} setCorreo={setCorreo} theme={theme} emailDomain={COMPUTRON_EMAIL_DOMAIN} />
 
-        <label className="text-xs font-semibold text-stone-500 uppercase tracking-wide block mt-5">Tienda</label>
-        <select value={tiendaId} onChange={(e) => { setTiendaId(e.target.value); setQuantities({}); setObservaciones(""); setError(""); }}
-          disabled={!infoComplete}
-          className={`mt-1.5 w-full border border-stone-300 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 ${theme.ring} disabled:bg-stone-100 disabled:text-stone-400`}>
-          <option value="">{infoComplete ? "Selecciona tu tienda..." : "Completa tus datos primero"}</option>
-          {tiendas.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-        </select>
+        {infoComplete && checkingEmail && <p className="text-xs text-stone-400 mt-3">Verificando tu correo...</p>}
+        {infoComplete && !checkingEmail && existingByEmail && <AlreadySubmittedByEmailBanner existing={existingByEmail} />}
 
-        {checking && <p className="text-xs text-stone-400 mt-3">Verificando...</p>}
-        {!checking && tiendaId && existing && <AlreadySubmittedBanner existing={existing} />}
+        {canPickEntity && (
+          <>
+            <label className="text-xs font-semibold text-stone-500 uppercase tracking-wide block mt-5">Tienda</label>
+            <select value={tiendaId} onChange={(e) => { setTiendaId(e.target.value); setQuantities({}); setObservaciones(""); setError(""); }}
+              className={`mt-1.5 w-full border border-stone-300 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 ${theme.ring}`}>
+              <option value="">Selecciona tu tienda...</option>
+              {tiendas.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+          </>
+        )}
+
+        {!infoComplete && (
+          <>
+            <label className="text-xs font-semibold text-stone-500 uppercase tracking-wide block mt-5">Tienda</label>
+            <select disabled
+              className="mt-1.5 w-full border border-stone-300 rounded-lg px-3 py-2.5 text-sm bg-stone-100 text-stone-400">
+              <option>Completa tus datos primero</option>
+            </select>
+          </>
+        )}
+
+        {canPickEntity && checking && <p className="text-xs text-stone-400 mt-3">Verificando...</p>}
+        {canPickEntity && !checking && tiendaId && existing && <AlreadySubmittedBanner existing={existing} />}
 
         {showItems && (
           <>
