@@ -398,7 +398,7 @@ function PersonalInfoFields({ nombre, apellido, correo, setNombre, setApellido, 
   );
 }
 
-function ItemCatalog({ items, quantities, setQty, theme }) {
+function ItemCatalog({ items, quantities, setQty, theme, justifications, setJustification }) {
   const t = theme || THEME.CARTIMEX;
   const [search, setSearch] = useState("");
 
@@ -431,8 +431,10 @@ function ItemCatalog({ items, quantities, setQty, theme }) {
         {filtered.map((it) => {
           const qty = parseInt(quantities[it.id], 10) || 0;
           const active = qty > 0;
+          const overLimit = it.limite && it.limite > 0 && qty > it.limite;
           return (
-            <div key={it.id} className={`border rounded-xl p-3 flex flex-col gap-2.5 transition-colors ${active ? `${t.activeCardBorder} ${t.activeCardBg}` : "border-stone-200 bg-white"}`}>
+            <div key={it.id}
+              className={`border rounded-xl p-3 flex flex-col gap-2.5 transition-colors ${overLimit ? "border-red-300 bg-red-50" : active ? `${t.activeCardBorder} ${t.activeCardBg}` : "border-stone-200 bg-white"} ${overLimit ? "sm:col-span-2" : ""}`}>
               <div className="flex items-start justify-between gap-2">
                 <p className="text-sm font-medium text-stone-800 leading-snug">{it.item}</p>
                 <span className="text-[10px] font-mono text-stone-300 shrink-0 mt-0.5">#{it.numero}</span>
@@ -447,12 +449,25 @@ function ItemCatalog({ items, quantities, setQty, theme }) {
                 </button>
                 <input type="number" min="0" inputMode="numeric" value={quantities[it.id] ?? ""}
                   onChange={(e) => setQty(it.id, e.target.value)} placeholder="0"
-                  className={`w-14 text-center border border-stone-200 rounded-md px-1 py-1 text-sm focus:outline-none focus:ring-2 ${t.ring}`} />
+                  className={`w-14 text-center border rounded-md px-1 py-1 text-sm focus:outline-none focus:ring-2 ${overLimit ? "border-red-300" : "border-stone-200"} ${t.ring}`} />
                 <button type="button" onClick={() => bump(it, 1)}
                   className="w-7 h-7 rounded-md border border-stone-300 flex items-center justify-center text-stone-500 hover:bg-stone-100 shrink-0">
                   <Plus className="w-3.5 h-3.5" />
                 </button>
               </div>
+              {overLimit && (
+                <div className="mt-0.5">
+                  <div className="flex items-start gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 text-red-700 shrink-0 mt-0.5" />
+                    <p className="text-xs text-red-800 leading-snug">
+                      Cantidad alta (límite habitual: {it.limite} {it.unidad}). Ingresa una justificación válida: será verificada antes de aprobar la entrega del suministro.
+                    </p>
+                  </div>
+                  <textarea rows={2} value={justifications[it.id] || ""} onChange={(e) => setJustification(it.id, e.target.value)}
+                    placeholder="Justificación"
+                    className="mt-2 w-full border border-red-300 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-red-400 resize-none bg-white" />
+                </div>
+              )}
             </div>
           );
         })}
@@ -709,6 +724,7 @@ function CartimexForm({ config, areas, items, onGoAdmin }) {
   const [correo, setCorreo] = useState("");
   const [areaId, setAreaId] = useState("");
   const [quantities, setQuantities] = useState({});
+  const [justifications, setJustifications] = useState({});
   const [observaciones, setObservaciones] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -724,9 +740,11 @@ function CartimexForm({ config, areas, items, onGoAdmin }) {
     const n = val === "" ? "" : Math.max(0, parseInt(val, 10) || 0);
     setQuantities((prev) => ({ ...prev, [id]: n }));
   };
+  const setJustification = (id, text) => setJustifications((prev) => ({ ...prev, [id]: text }));
   const total = useMemo(() => Object.values(quantities).reduce((a, b) => a + (parseInt(b, 10) || 0), 0), [quantities]);
   const selectedCount = useMemo(() => items.filter((it) => (parseInt(quantities[it.id], 10) || 0) > 0).length, [items, quantities]);
   const areaLabel = areas.find((a) => a.id === areaId)?.label || areaId;
+  const itemsOverLimit = useMemo(() => items.filter((it) => it.limite && it.limite > 0 && (parseInt(quantities[it.id], 10) || 0) > it.limite), [items, quantities]);
 
   const validate = () => {
     setError("");
@@ -736,6 +754,8 @@ function CartimexForm({ config, areas, items, onGoAdmin }) {
     if (!areaId) { setError("Selecciona tu departamento."); return false; }
     const any = Object.values(quantities).some((v) => (parseInt(v, 10) || 0) > 0);
     if (!any) { setError("Ingresa al menos una cantidad mayor a 0."); return false; }
+    const missingJust = itemsOverLimit.some((it) => !(justifications[it.id] || "").trim());
+    if (missingJust) { setError("Completa la justificación de los artículos marcados en rojo antes de continuar."); return false; }
     return true;
   };
 
@@ -752,13 +772,15 @@ function CartimexForm({ config, areas, items, onGoAdmin }) {
 
     const clean = {};
     Object.entries(quantities).forEach(([k, v]) => { const n = parseInt(v, 10) || 0; if (n > 0) clean[k] = n; });
+    const cleanJust = {};
+    itemsOverLimit.forEach((it) => { const t = (justifications[it.id] || "").trim(); if (t) cleanJust[it.id] = t; });
 
     setSubmitting(true);
     const record = {
       format: "CARTIMEX", period: config.periodSlug, periodLabel: config.periodLabel,
       entity: areaId, entityLabel: areaLabel,
       nombre: nombre.trim(), apellido: apellido.trim(), correo: correo.trim(),
-      quantities: clean, observaciones: observaciones.trim(), date: new Date().toISOString(),
+      quantities: clean, justifications: cleanJust, observaciones: observaciones.trim(), date: new Date().toISOString(),
     };
     const ok = await safeSet(submissionKey("CARTIMEX", config.periodSlug, areaId), JSON.stringify(record), true);
     setSubmitting(false);
@@ -808,7 +830,7 @@ function CartimexForm({ config, areas, items, onGoAdmin }) {
         {showItems && (
           <>
             <div className="mt-5">
-              <ItemCatalog items={items} quantities={quantities} setQty={setQty} theme={theme} />
+              <ItemCatalog items={items} quantities={quantities} setQty={setQty} theme={theme} justifications={justifications} setJustification={setJustification} />
             </div>
 
             <label className="text-xs font-semibold text-stone-500 uppercase tracking-wide block mt-5">Observaciones (opcional)</label>
@@ -848,6 +870,7 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
   const [correo, setCorreo] = useState("");
   const [tiendaId, setTiendaId] = useState("");
   const [quantities, setQuantities] = useState({});
+  const [justifications, setJustifications] = useState({});
   const [observaciones, setObservaciones] = useState("");
   const [category, setCategory] = useState("oficina");
   const [submitting, setSubmitting] = useState(false);
@@ -864,10 +887,12 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
     const n = val === "" ? "" : Math.max(0, parseInt(val, 10) || 0);
     setQuantities((prev) => ({ ...prev, [id]: n }));
   };
+  const setJustification = (id, text) => setJustifications((prev) => ({ ...prev, [id]: text }));
   const total = useMemo(() => Object.values(quantities).reduce((a, b) => a + (parseInt(b, 10) || 0), 0), [quantities]);
   const allItems = useMemo(() => [...itemsOficina, ...itemsLimpieza], [itemsOficina, itemsLimpieza]);
   const selectedCount = useMemo(() => allItems.filter((it) => (parseInt(quantities[it.id], 10) || 0) > 0).length, [allItems, quantities]);
   const tiendaLabel = tiendas.find((t) => t.id === tiendaId)?.label || tiendaId;
+  const itemsOverLimit = useMemo(() => allItems.filter((it) => it.limite && it.limite > 0 && (parseInt(quantities[it.id], 10) || 0) > it.limite), [allItems, quantities]);
 
   const validate = () => {
     setError("");
@@ -877,6 +902,8 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
     if (!tiendaId) { setError("Selecciona tu tienda."); return false; }
     const any = Object.values(quantities).some((v) => (parseInt(v, 10) || 0) > 0);
     if (!any) { setError("Ingresa al menos una cantidad mayor a 0 (Oficina o Limpieza)."); return false; }
+    const missingJust = itemsOverLimit.some((it) => !(justifications[it.id] || "").trim());
+    if (missingJust) { setError("Completa la justificación de los artículos marcados en rojo antes de continuar."); return false; }
     return true;
   };
 
@@ -892,13 +919,15 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
 
     const clean = {};
     Object.entries(quantities).forEach(([k, v]) => { const n = parseInt(v, 10) || 0; if (n > 0) clean[k] = n; });
+    const cleanJust = {};
+    itemsOverLimit.forEach((it) => { const t = (justifications[it.id] || "").trim(); if (t) cleanJust[it.id] = t; });
 
     setSubmitting(true);
     const record = {
       format: "COMPUTRON", period: config.periodSlug, periodLabel: config.periodLabel,
       entity: tiendaId, entityLabel: tiendaLabel,
       nombre: nombre.trim(), apellido: apellido.trim(), correo: correo.trim(),
-      quantities: clean, observaciones: observaciones.trim(), date: new Date().toISOString(),
+      quantities: clean, justifications: cleanJust, observaciones: observaciones.trim(), date: new Date().toISOString(),
     };
     const ok = await safeSet(submissionKey("COMPUTRON", config.periodSlug, tiendaId), JSON.stringify(record), true);
     setSubmitting(false);
@@ -956,9 +985,9 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
             />
             <div className="mt-4">
               {category === "oficina" ? (
-                <ItemCatalog items={itemsOficina} quantities={quantities} setQty={setQty} theme={theme} />
+                <ItemCatalog items={itemsOficina} quantities={quantities} setQty={setQty} theme={theme} justifications={justifications} setJustification={setJustification} />
               ) : (
-                <ItemCatalog items={itemsLimpieza} quantities={quantities} setQty={setQty} theme={theme} />
+                <ItemCatalog items={itemsLimpieza} quantities={quantities} setQty={setQty} theme={theme} justifications={justifications} setJustification={setJustification} />
               )}
             </div>
 
@@ -1077,6 +1106,23 @@ function FormatSwitch({ value, onChange }) {
 
 /* ---------------------------- Informe ------------------------------ */
 
+function DetailItemRow({ it }) {
+  return (
+    <div className="px-3 py-1.5 text-xs">
+      <div className="flex items-center justify-between">
+        <span className="text-stone-700">{it.item}</span>
+        <span className="text-stone-500 font-medium shrink-0 ml-2">{it.qty} {it.unidad}</span>
+      </div>
+      {it.justification && (
+        <div className="flex items-start gap-1 mt-1 bg-red-50 border border-red-200 rounded-md px-2 py-1.5">
+          <AlertCircle className="w-3 h-3 text-red-600 shrink-0 mt-0.5" />
+          <p className="text-[11px] text-red-800 leading-snug">{it.justification}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InformeTab({ config, data }) {
   const [format, setFormat] = useState(config.activeFormat || "CARTIMEX");
   const [periods, setPeriods] = useState([]);
@@ -1154,7 +1200,7 @@ function InformeTab({ config, data }) {
 
   const detailLists = (sub) => {
     const entries = Object.entries(sub.quantities)
-      .map(([id, qty]) => ({ ...(itemMap[id] || {}), id, qty }))
+      .map(([id, qty]) => ({ ...(itemMap[id] || {}), id, qty, justification: sub.justifications?.[id] || null }))
       .filter((x) => x.item);
     if (format !== "COMPUTRON") return { general: entries.sort((a, b) => a.numero - b.numero) };
     return {
@@ -1167,23 +1213,24 @@ function InformeTab({ config, data }) {
   const buildSheetAOA = (rowsForSheet, entitiesForSheet, totalsForSheet, title) => {
     const aoa = [];
     aoa.push([]); aoa.push(["SUMINISTROS"]); aoa.push([title]); aoa.push([]); aoa.push([]);
-    aoa.push(["NÚMERO", "PROVEEDOR", "ITEM", "UNIDAD DE MEDIDA", ...entitiesForSheet.map((e) => e.label.toUpperCase()), "TOTAL SOLICITADO EN EL PERIODO", "OBSERVACIONES"]);
+    aoa.push(["NÚMERO", "PROVEEDOR", "ITEM", "UNIDAD DE MEDIDA", ...entitiesForSheet.map((e) => e.label.toUpperCase()), "TOTAL SOLICITADO EN EL PERIODO", "OBSERVACIONES", "JUSTIFICACIÓN"]);
     rowsForSheet.forEach((r) => {
-      aoa.push([r.numero, r.proveedor, r.item, r.unidad, ...entitiesForSheet.map((e) => r.byEntity[e.id] || 0), r.total, r.obs]);
+      aoa.push([r.numero, r.proveedor, r.item, r.unidad, ...entitiesForSheet.map((e) => r.byEntity[e.id] || 0), r.total, r.obs, r.just]);
     });
-    aoa.push(["", "", "TOTAL", "", ...entitiesForSheet.map((e) => totalsForSheet[e.id]), totalsForSheet.TOTAL, ""]);
+    aoa.push(["", "", "TOTAL", "", ...entitiesForSheet.map((e) => totalsForSheet[e.id]), totalsForSheet.TOTAL, "", ""]);
     return aoa;
   };
 
   const buildItemRows = (its) => its.map((it) => {
-    const byEntity = {}; let total = 0; const obs = [];
+    const byEntity = {}; let total = 0; const obs = []; const just = [];
     entities.forEach((en) => {
       const sub = submissions.find((s) => s.entity === en.id);
       const qty = sub?.quantities?.[it.id] || 0;
       byEntity[en.id] = qty; total += qty;
       if (sub?.observaciones && qty > 0) obs.push(`${en.label}: ${sub.observaciones}`);
+      if (sub?.justifications?.[it.id]) just.push(`${en.label}: ${sub.justifications[it.id]}`);
     });
-    return { ...it, byEntity, total, obs: obs.join(" · ") };
+    return { ...it, byEntity, total, obs: obs.join(" · "), just: just.join(" · ") };
   });
   const buildTotals = (rws) => {
     const t = {}; entities.forEach((en) => { t[en.id] = rws.reduce((s, r) => s + (r.byEntity[en.id] || 0), 0); });
@@ -1198,7 +1245,7 @@ function InformeTab({ config, data }) {
       const rows = buildItemRows(data.cartimexItems);
       const aoa = buildSheetAOA(rows, entities, buildTotals(rows), `OFICINA · ${periodLabel}`);
       const ws = XLSX.utils.aoa_to_sheet(aoa);
-      ws["!cols"] = [{ wch: 8 }, { wch: 12 }, { wch: 40 }, { wch: 10 }, ...entities.map(() => ({ wch: 11 })), { wch: 14 }, { wch: 30 }];
+      ws["!cols"] = [{ wch: 8 }, { wch: 12 }, { wch: 40 }, { wch: 10 }, ...entities.map(() => ({ wch: 11 })), { wch: 14 }, { wch: 30 }, { wch: 30 }];
       XLSX.utils.book_append_sheet(wb, ws, "Consolidado");
     } else {
       const rowsOfc = buildItemRows(data.computronItemsOficina);
@@ -1206,12 +1253,12 @@ function InformeTab({ config, data }) {
 
       const aoaOfc = buildSheetAOA(rowsOfc, entities, buildTotals(rowsOfc), `OFICINA · ${periodLabel}`);
       const wsOfc = XLSX.utils.aoa_to_sheet(aoaOfc);
-      wsOfc["!cols"] = [{ wch: 8 }, { wch: 12 }, { wch: 40 }, { wch: 10 }, ...entities.map(() => ({ wch: 10 })), { wch: 14 }, { wch: 30 }];
+      wsOfc["!cols"] = [{ wch: 8 }, { wch: 12 }, { wch: 40 }, { wch: 10 }, ...entities.map(() => ({ wch: 10 })), { wch: 14 }, { wch: 30 }, { wch: 30 }];
       XLSX.utils.book_append_sheet(wb, wsOfc, "Suministros Oficina");
 
       const aoaLmp = buildSheetAOA(rowsLmp, entities, buildTotals(rowsLmp), `LIMPIEZA · ${periodLabel}`);
       const wsLmp = XLSX.utils.aoa_to_sheet(aoaLmp);
-      wsLmp["!cols"] = [{ wch: 8 }, { wch: 12 }, { wch: 40 }, { wch: 10 }, ...entities.map(() => ({ wch: 10 })), { wch: 14 }, { wch: 30 }];
+      wsLmp["!cols"] = [{ wch: 8 }, { wch: 12 }, { wch: 40 }, { wch: 10 }, ...entities.map(() => ({ wch: 10 })), { wch: 14 }, { wch: 30 }, { wch: 30 }];
       XLSX.utils.book_append_sheet(wb, wsLmp, "Suministros Limpieza");
     }
 
@@ -1315,35 +1362,20 @@ function InformeTab({ config, data }) {
                             <p className="text-xs font-semibold text-stone-600 mb-1.5">Oficina ({r.totalOficina} unidades)</p>
                             <div className="border border-stone-200 rounded-lg divide-y divide-stone-100 max-h-56 overflow-y-auto">
                               {lists.oficina.length === 0 && <p className="px-3 py-3 text-xs text-stone-400">Sin artículos.</p>}
-                              {lists.oficina.map((it) => (
-                                <div key={it.id} className="flex items-center justify-between px-3 py-1.5 text-xs">
-                                  <span className="text-stone-700">{it.item}</span>
-                                  <span className="text-stone-500 font-medium shrink-0 ml-2">{it.qty} {it.unidad}</span>
-                                </div>
-                              ))}
+                              {lists.oficina.map((it) => <DetailItemRow key={it.id} it={it} />)}
                             </div>
                           </div>
                           <div>
                             <p className="text-xs font-semibold text-stone-600 mb-1.5">Limpieza ({r.totalLimpieza} unidades)</p>
                             <div className="border border-stone-200 rounded-lg divide-y divide-stone-100 max-h-56 overflow-y-auto">
                               {lists.limpieza.length === 0 && <p className="px-3 py-3 text-xs text-stone-400">Sin artículos.</p>}
-                              {lists.limpieza.map((it) => (
-                                <div key={it.id} className="flex items-center justify-between px-3 py-1.5 text-xs">
-                                  <span className="text-stone-700">{it.item}</span>
-                                  <span className="text-stone-500 font-medium shrink-0 ml-2">{it.qty} {it.unidad}</span>
-                                </div>
-                              ))}
+                              {lists.limpieza.map((it) => <DetailItemRow key={it.id} it={it} />)}
                             </div>
                           </div>
                         </div>
                       ) : (
                         <div className="border border-stone-200 rounded-lg divide-y divide-stone-100 max-h-72 overflow-y-auto">
-                          {lists.general.map((it) => (
-                            <div key={it.id} className="flex items-center justify-between px-3 py-1.5 text-xs">
-                              <span className="text-stone-700">{it.item}</span>
-                              <span className="text-stone-500 font-medium shrink-0 ml-2">{it.qty} {it.unidad}</span>
-                            </div>
-                          ))}
+                          {lists.general.map((it) => <DetailItemRow key={it.id} it={it} />)}
                         </div>
                       )}
                       {r.sub.observaciones && (
@@ -1466,8 +1498,8 @@ function ArticulosTab({ data, onCartimexItemsChange, onComputronItemsOficinaChan
 function ItemsManager({ items, onChange, idPrefix }) {
   const [search, setSearch] = useState("");
   const [editingId, setEditingId] = useState(null);
-  const [draft, setDraft] = useState({ proveedor: "", item: "", unidad: "" });
-  const [newItem, setNewItem] = useState({ proveedor: "", item: "", unidad: "UND" });
+  const [draft, setDraft] = useState({ proveedor: "", item: "", unidad: "", limite: "" });
+  const [newItem, setNewItem] = useState({ proveedor: "", item: "", unidad: "UND", limite: "" });
   const [showNew, setShowNew] = useState(false);
 
   const filtered = useMemo(() => {
@@ -1476,15 +1508,20 @@ function ItemsManager({ items, onChange, idPrefix }) {
     return items.filter((it) => it.item.toLowerCase().includes(q) || it.proveedor.toLowerCase().includes(q));
   }, [items, search]);
 
-  const startEdit = (it) => { setEditingId(it.id); setDraft({ proveedor: it.proveedor, item: it.item, unidad: it.unidad }); };
-  const saveEdit = (id) => { onChange(items.map((it) => (it.id === id ? { ...it, ...draft } : it))); setEditingId(null); };
+  const startEdit = (it) => { setEditingId(it.id); setDraft({ proveedor: it.proveedor, item: it.item, unidad: it.unidad, limite: it.limite || "" }); };
+  const saveEdit = (id) => {
+    const limite = parseInt(draft.limite, 10);
+    onChange(items.map((it) => (it.id === id ? { ...it, proveedor: draft.proveedor, item: draft.item, unidad: draft.unidad, limite: limite > 0 ? limite : null } : it)));
+    setEditingId(null);
+  };
   const remove = (id) => onChange(items.filter((it) => it.id !== id));
   const addItem = () => {
     if (!newItem.item.trim()) return;
     const nextNumero = items.length ? Math.max(...items.map((i) => i.numero)) + 1 : 1;
     const id = makeId(items.map((i) => i.id), `${idPrefix}${nextNumero}`);
-    onChange([...items, { id, numero: nextNumero, ...newItem }]);
-    setNewItem({ proveedor: "", item: "", unidad: "UND" });
+    const limite = parseInt(newItem.limite, 10);
+    onChange([...items, { id, numero: nextNumero, proveedor: newItem.proveedor, item: newItem.item, unidad: newItem.unidad, limite: limite > 0 ? limite : null }]);
+    setNewItem({ proveedor: "", item: "", unidad: "UND", limite: "" });
     setShowNew(false);
   };
 
@@ -1497,29 +1534,32 @@ function ItemsManager({ items, onChange, idPrefix }) {
         </div>
         <button onClick={() => setShowNew((s) => !s)} className="flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg px-3.5 py-2"><Plus className="w-4 h-4" /> Nuevo artículo</button>
       </div>
+      <p className="text-xs text-stone-400 mb-3">El "Límite sugerido" es opcional. Si una solicitud pide más que ese número, se le pedirá al jefe de tienda/departamento que justifique la cantidad antes de poder enviar.</p>
 
       {showNew && (
-        <div className="mb-4 border border-amber-200 bg-amber-50 rounded-lg p-4 grid grid-cols-1 sm:grid-cols-[1fr_2fr_5rem_auto] gap-2 items-center">
+        <div className="mb-4 border border-amber-200 bg-amber-50 rounded-lg p-4 grid grid-cols-1 sm:grid-cols-[1fr_2fr_5rem_6rem_auto] gap-2 items-center">
           <input value={newItem.proveedor} onChange={(e) => setNewItem({ ...newItem, proveedor: e.target.value })} placeholder="Proveedor" className="border border-stone-300 rounded-md px-2 py-1.5 text-sm" />
           <input value={newItem.item} onChange={(e) => setNewItem({ ...newItem, item: e.target.value })} placeholder="Nombre del artículo" className="border border-stone-300 rounded-md px-2 py-1.5 text-sm" />
           <input value={newItem.unidad} onChange={(e) => setNewItem({ ...newItem, unidad: e.target.value })} placeholder="Unidad" className="border border-stone-300 rounded-md px-2 py-1.5 text-sm" />
+          <input type="number" min="0" value={newItem.limite} onChange={(e) => setNewItem({ ...newItem, limite: e.target.value })} placeholder="Límite" className="border border-stone-300 rounded-md px-2 py-1.5 text-sm" />
           <button onClick={addItem} className="bg-stone-800 hover:bg-stone-900 text-white text-sm rounded-md px-3 py-1.5">Agregar</button>
         </div>
       )}
 
       <div className="border border-stone-200 rounded-lg overflow-hidden">
-        <div className="grid grid-cols-[2.5rem_1fr_1fr_5rem_5rem] bg-stone-100 text-[11px] font-semibold text-stone-500 uppercase tracking-wide px-3 py-2">
-          <span>#</span><span>Proveedor</span><span>Artículo</span><span>Unidad</span><span></span>
+        <div className="grid grid-cols-[2.5rem_1fr_1fr_5rem_5rem_5rem] bg-stone-100 text-[11px] font-semibold text-stone-500 uppercase tracking-wide px-3 py-2">
+          <span>#</span><span>Proveedor</span><span>Artículo</span><span>Unidad</span><span>Límite</span><span></span>
         </div>
         <div className="divide-y divide-stone-100 max-h-[500px] overflow-y-auto">
           {filtered.map((it) => (
-            <div key={it.id} className="grid grid-cols-[2.5rem_1fr_1fr_5rem_5rem] items-center px-3 py-2 text-sm">
+            <div key={it.id} className="grid grid-cols-[2.5rem_1fr_1fr_5rem_5rem_5rem] items-center px-3 py-2 text-sm">
               <span className="text-stone-400 font-mono text-xs">{it.numero}</span>
               {editingId === it.id ? (
                 <>
                   <input value={draft.proveedor} onChange={(e) => setDraft({ ...draft, proveedor: e.target.value })} className="border border-stone-300 rounded-md px-2 py-1 text-xs mr-2" />
                   <input value={draft.item} onChange={(e) => setDraft({ ...draft, item: e.target.value })} className="border border-stone-300 rounded-md px-2 py-1 text-xs mr-2" />
-                  <input value={draft.unidad} onChange={(e) => setDraft({ ...draft, unidad: e.target.value })} className="border border-stone-300 rounded-md px-2 py-1 text-xs" />
+                  <input value={draft.unidad} onChange={(e) => setDraft({ ...draft, unidad: e.target.value })} className="border border-stone-300 rounded-md px-2 py-1 text-xs mr-2" />
+                  <input type="number" min="0" value={draft.limite} onChange={(e) => setDraft({ ...draft, limite: e.target.value })} placeholder="Sin límite" className="border border-stone-300 rounded-md px-2 py-1 text-xs" />
                   <div className="flex gap-2 justify-end">
                     <button onClick={() => saveEdit(it.id)} className="text-emerald-600 hover:text-emerald-800"><CheckCircle2 className="w-4 h-4" /></button>
                     <button onClick={() => setEditingId(null)} className="text-stone-400 hover:text-stone-600"><X className="w-4 h-4" /></button>
@@ -1530,6 +1570,7 @@ function ItemsManager({ items, onChange, idPrefix }) {
                   <span className="text-stone-500">{it.proveedor}</span>
                   <span className="text-stone-800">{it.item}</span>
                   <span className="text-stone-500">{it.unidad}</span>
+                  <span className="text-stone-500">{it.limite || <span className="text-stone-300">—</span>}</span>
                   <div className="flex gap-3 justify-end">
                     <button onClick={() => startEdit(it)} className="text-stone-400 hover:text-stone-700"><Pencil className="w-4 h-4" /></button>
                     <button onClick={() => remove(it.id)} className="text-stone-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
