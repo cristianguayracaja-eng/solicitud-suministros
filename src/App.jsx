@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Lock, Plus, Minus, Trash2, Pencil, Download, Search, ClipboardList,
   Settings, FileText, ArrowLeft, AlertCircle, CheckCircle2, X,
-  RefreshCw, Users, Package, Store, Building2, User, ChevronDown, RotateCcw, PlayCircle, StopCircle
+  RefreshCw, Users, Package, Store, Building2, User, ChevronDown, RotateCcw, PlayCircle, StopCircle,
+  ChevronUp
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { safeGet, safeSet, safeList, safeDelete } from "./api.js";
@@ -404,8 +405,8 @@ function ItemCatalog({ items, quantities, setQty, theme, justifications, setJust
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter((it) => it.item.toLowerCase().includes(q) || String(it.numero).includes(q));
+    const base = q ? items.filter((it) => it.item.toLowerCase().includes(q) || String(it.numero).includes(q)) : items;
+    return [...base].sort((a, b) => a.item.localeCompare(b.item, "es"));
   }, [items, search]);
 
   const selectedCount = items.filter((it) => (parseInt(quantities[it.id], 10) || 0) > 0).length;
@@ -1416,12 +1417,21 @@ function EntidadesTab({ data, onCartimexAreasChange, onComputronTiendasChange })
   const startEdit = (e) => { setEditingId(e.id); setDraftLabel(e.label); };
   const saveEdit = (id) => { onChange(entities.map((e) => (e.id === id ? { ...e, label: draftLabel } : e))); setEditingId(null); };
 
+  const move = (index, delta) => {
+    const target = index + delta;
+    if (target < 0 || target >= entities.length) return;
+    const next = [...entities];
+    [next[index], next[target]] = [next[target], next[index]];
+    onChange(next);
+  };
+
   return (
     <div className="max-w-2xl">
       <label className="text-xs font-semibold text-stone-500 uppercase tracking-wide block mb-1">Marca</label>
       <FormatSwitch value={format} onChange={setFormat} />
       <p className="text-xs text-stone-500 mt-3 mb-4">
         {format === "CARTIMEX" ? "Departamentos que aparecen en el formulario y el informe de CARTIMEX." : "Tiendas que aparecen en el formulario y el informe de COMPUTRON."}
+        {" "}Usa las flechas para reordenarlos — ese mismo orden se refleja en el desplegable del formulario y en las columnas del Excel exportado.
       </p>
 
       <div className="flex gap-2 mb-4">
@@ -1431,7 +1441,7 @@ function EntidadesTab({ data, onCartimexAreasChange, onComputronTiendasChange })
       </div>
 
       <div className="border border-stone-200 rounded-lg divide-y divide-stone-100 max-h-[480px] overflow-y-auto">
-        {entities.map((e) => (
+        {entities.map((e, idx) => (
           <div key={e.id} className="flex items-center justify-between px-3 py-2 text-sm">
             {editingId === e.id ? (
               <>
@@ -1443,7 +1453,20 @@ function EntidadesTab({ data, onCartimexAreasChange, onComputronTiendasChange })
               </>
             ) : (
               <>
-                <span className="text-stone-800">{e.label}</span>
+                <div className="flex items-center gap-2">
+                  <div className="flex flex-col -my-1">
+                    <button onClick={() => move(idx, -1)} disabled={idx === 0}
+                      className="text-stone-300 hover:text-stone-700 disabled:opacity-20 disabled:hover:text-stone-300" title="Subir">
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    </button>
+                    <button onClick={() => move(idx, 1)} disabled={idx === entities.length - 1}
+                      className="text-stone-300 hover:text-stone-700 disabled:opacity-20 disabled:hover:text-stone-300" title="Bajar">
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <span className="text-stone-400 text-xs font-mono w-5">{idx + 1}</span>
+                  <span className="text-stone-800">{e.label}</span>
+                </div>
                 <div className="flex gap-3">
                   <button onClick={() => startEdit(e)} className="text-stone-400 hover:text-stone-700"><Pencil className="w-4 h-4" /></button>
                   <button onClick={() => remove(e.id)} className="text-stone-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
@@ -1504,8 +1527,8 @@ function ItemsManager({ items, onChange, idPrefix }) {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter((it) => it.item.toLowerCase().includes(q) || it.proveedor.toLowerCase().includes(q));
+    const base = q ? items.filter((it) => it.item.toLowerCase().includes(q) || it.proveedor.toLowerCase().includes(q)) : items;
+    return [...base].sort((a, b) => a.item.localeCompare(b.item, "es"));
   }, [items, search]);
 
   const startEdit = (it) => { setEditingId(it.id); setDraft({ proveedor: it.proveedor, item: it.item, unidad: it.unidad, limite: it.limite || "" }); };
