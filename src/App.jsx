@@ -3,7 +3,7 @@ import {
   Lock, Plus, Minus, Trash2, Pencil, Download, Search, ClipboardList,
   Settings, FileText, ArrowLeft, AlertCircle, CheckCircle2, X,
   RefreshCw, Users, Package, Store, Building2, User, ChevronDown, RotateCcw, PlayCircle, StopCircle,
-  ChevronUp
+  ChevronUp, Upload
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { safeGet, safeSet, safeList, safeDelete } from "./api.js";
@@ -1151,17 +1151,20 @@ function InformeTab({ config, data }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [format, periods]);
 
-  useEffect(() => {
+  const fetchSubmissions = useCallback(async () => {
     if (!selectedPeriod) { setSubmissions([]); setLoading(false); return; }
-    (async () => {
-      setLoading(true);
-      const keys = await safeList(`submission:${format}:${selectedPeriod}:`, true);
-      const recs = [];
-      for (const k of keys) { const raw = await safeGet(k, true); const rec = parseJSON(raw, null); if (rec) recs.push(rec); }
-      setSubmissions(recs);
-      setLoading(false);
-      setExpandedId(null);
-    })();
+    setLoading(true);
+    const keys = await safeList(`submission:${format}:${selectedPeriod}:`, true);
+    const recs = [];
+    for (const k of keys) { const raw = await safeGet(k, true); const rec = parseJSON(raw, null); if (rec) recs.push(rec); }
+    setSubmissions(recs);
+    setLoading(false);
+  }, [format, selectedPeriod]);
+
+  useEffect(() => {
+    fetchSubmissions();
+    setExpandedId(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [format, selectedPeriod]);
 
   const entities = format === "CARTIMEX" ? data.cartimexAreas : data.computronTiendas;
@@ -1208,6 +1211,16 @@ function InformeTab({ config, data }) {
       oficina: entries.filter((x) => x.id.startsWith("ofc")).sort((a, b) => a.numero - b.numero),
       limpieza: entries.filter((x) => x.id.startsWith("lmp")).sort((a, b) => a.numero - b.numero),
     };
+  };
+
+  const deleteSubmission = async (entityId, entityLabel) => {
+    const ok = window.confirm(
+      `¿Eliminar la solicitud de ${entityLabel} para este periodo?\n\nEsto no se puede deshacer. El jefe de tienda/departamento podrá volver a llenar y enviar su solicitud desde cero.`
+    );
+    if (!ok) return;
+    await safeDelete(submissionKey(format, selectedPeriod, entityId), true);
+    setSubmissions((prev) => prev.filter((s) => s.entity !== entityId));
+    setExpandedId(null);
   };
 
   /* ---- export a Excel (matriz completa, igual al formato original) ---- */
@@ -1291,10 +1304,16 @@ function InformeTab({ config, data }) {
             </select>
           </div>
         </div>
-        <button onClick={exportExcel} disabled={!selectedPeriod || entities.length === 0}
-          className="flex items-center gap-1.5 bg-stone-800 hover:bg-stone-900 disabled:opacity-40 text-white text-sm font-medium rounded-lg px-4 py-2.5 transition-colors">
-          <Download className="w-4 h-4" /> Exportar a Excel
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={fetchSubmissions} disabled={!selectedPeriod || loading}
+            className="flex items-center gap-1.5 border border-stone-300 text-stone-600 hover:bg-stone-50 disabled:opacity-40 text-sm font-medium rounded-lg px-4 py-2.5 transition-colors">
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> Actualizar
+          </button>
+          <button onClick={exportExcel} disabled={!selectedPeriod || entities.length === 0}
+            className="flex items-center gap-1.5 bg-stone-800 hover:bg-stone-900 disabled:opacity-40 text-white text-sm font-medium rounded-lg px-4 py-2.5 transition-colors">
+            <Download className="w-4 h-4" /> Exportar a Excel
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -1382,6 +1401,10 @@ function InformeTab({ config, data }) {
                       {r.sub.observaciones && (
                         <p className="text-xs text-stone-500 mt-3"><span className="font-semibold text-stone-600">Observaciones:</span> {r.sub.observaciones}</p>
                       )}
+                      <button onClick={() => deleteSubmission(r.id, r.label)}
+                        className="flex items-center gap-1.5 text-xs font-medium text-red-600 hover:text-red-800 mt-4">
+                        <Trash2 className="w-3.5 h-3.5" /> Eliminar esta solicitud (permite reenvío)
+                      </button>
                     </div>
                   )}
                 </div>
@@ -1495,8 +1518,8 @@ function ArticulosTab({ data, onCartimexItemsChange, onComputronItemsOficinaChan
   return (
     <div>
       <div className="flex items-center gap-2 mb-4 bg-amber-50 border border-amber-200 rounded-lg px-3.5 py-2.5 w-fit">
-        <Pencil className="w-3.5 h-3.5 text-amber-700 shrink-0" />
-        <p className="text-xs text-amber-800">Estás editando: <span className="font-semibold">{editingLabel}</span> — los artículos que agregues se guardarán aquí.</p>
+        <FileText className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+        <p className="text-xs text-amber-800">Catálogo de: <span className="font-semibold">{editingLabel}</span> — descarga, edita en Excel y vuelve a subir para modificar o agregar artículos.</p>
       </div>
       <div className="flex flex-wrap items-end gap-4 mb-4">
         <div>
@@ -1513,17 +1536,63 @@ function ArticulosTab({ data, onCartimexItemsChange, onComputronItemsOficinaChan
           </div>
         )}
       </div>
-      <ItemsManager key={`${format}-${category}`} items={items} onChange={onChange} idPrefix={idPrefix} />
+      <ItemsManager key={`${format}-${category}`} items={items} onChange={onChange} idPrefix={idPrefix} brandLabel={editingLabel} />
     </div>
   );
 }
 
-function ItemsManager({ items, onChange, idPrefix }) {
+function downloadItemsExcel(items, filenameLabel) {
+  const aoa = [["NÚMERO", "PROVEEDOR", "ARTÍCULO", "UNIDAD", "LÍMITE"]];
+  [...items].sort((a, b) => a.numero - b.numero).forEach((it) => {
+    aoa.push([it.numero, it.proveedor || "", it.item, it.unidad || "", it.limite || ""]);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = [{ wch: 8 }, { wch: 16 }, { wch: 40 }, { wch: 10 }, { wch: 8 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Artículos");
+  XLSX.writeFile(wb, `Catalogo_Articulos_${filenameLabel.replace(/[^\w]+/g, "_")}.xlsx`);
+}
+
+// Sube el Excel editado y combina: los NÚMERO que ya existen se actualizan
+// (proveedor/nombre/unidad/límite), los NÚMERO nuevos o sin dato se agregan
+// como artículos nuevos. Lo que NO aparezca en el archivo subido se deja
+// intacto — nunca se borra nada por omisión, solo con el botón de eliminar.
+function mergeItemsFromExcel(existingItems, rows, idPrefix) {
+  const byNumero = new Map(existingItems.map((it) => [it.numero, it]));
+  const touchedNumeros = new Set();
+  let maxNumero = existingItems.length ? Math.max(...existingItems.map((it) => it.numero)) : 0;
+  const existingIds = existingItems.map((it) => it.id);
+
+  const updatedOrNew = rows.map((row) => {
+    const numero = parseInt(row[0], 10);
+    const proveedor = String(row[1] ?? "").trim();
+    const item = String(row[2] ?? "").trim();
+    const unidad = String(row[3] ?? "").trim();
+    const limiteRaw = parseInt(row[4], 10);
+    const limite = limiteRaw > 0 ? limiteRaw : null;
+    const existing = Number.isFinite(numero) ? byNumero.get(numero) : null;
+
+    if (existing) {
+      touchedNumeros.add(numero);
+      return { ...existing, proveedor, item, unidad, limite };
+    }
+    maxNumero += 1;
+    const finalNumero = Number.isFinite(numero) && !byNumero.has(numero) ? numero : maxNumero;
+    touchedNumeros.add(finalNumero);
+    const id = makeId(existingIds, `${idPrefix}${finalNumero}`);
+    existingIds.push(id);
+    return { id, numero: finalNumero, proveedor, item, unidad, limite };
+  }).filter((it) => it.item);
+
+  const untouched = existingItems.filter((it) => !touchedNumeros.has(it.numero));
+  const updatedCount = updatedOrNew.filter((it) => byNumero.has(it.numero)).length;
+  const addedCount = updatedOrNew.length - updatedCount;
+  return { items: [...untouched, ...updatedOrNew], updatedCount, addedCount };
+}
+
+function ItemsManager({ items, onChange, idPrefix, brandLabel }) {
   const [search, setSearch] = useState("");
-  const [editingId, setEditingId] = useState(null);
-  const [draft, setDraft] = useState({ proveedor: "", item: "", unidad: "", limite: "" });
-  const [newItem, setNewItem] = useState({ proveedor: "", item: "", unidad: "UND", limite: "" });
-  const [showNew, setShowNew] = useState(false);
+  const [msg, setMsg] = useState(null); // { text, kind: 'ok'|'error' }
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1531,75 +1600,75 @@ function ItemsManager({ items, onChange, idPrefix }) {
     return [...base].sort((a, b) => a.item.localeCompare(b.item, "es"));
   }, [items, search]);
 
-  const startEdit = (it) => { setEditingId(it.id); setDraft({ proveedor: it.proveedor, item: it.item, unidad: it.unidad, limite: it.limite || "" }); };
-  const saveEdit = (id) => {
-    const limite = parseInt(draft.limite, 10);
-    onChange(items.map((it) => (it.id === id ? { ...it, proveedor: draft.proveedor, item: draft.item, unidad: draft.unidad, limite: limite > 0 ? limite : null } : it)));
-    setEditingId(null);
+  const remove = (it) => {
+    if (!window.confirm(`¿Eliminar "${it.item}" del catálogo? Esto no afecta solicitudes ya enviadas que ya lo incluían.`)) return;
+    onChange(items.filter((i) => i.id !== it.id));
   };
-  const remove = (id) => onChange(items.filter((it) => it.id !== id));
-  const addItem = () => {
-    if (!newItem.item.trim()) return;
-    const nextNumero = items.length ? Math.max(...items.map((i) => i.numero)) + 1 : 1;
-    const id = makeId(items.map((i) => i.id), `${idPrefix}${nextNumero}`);
-    const limite = parseInt(newItem.limite, 10);
-    onChange([...items, { id, numero: nextNumero, proveedor: newItem.proveedor, item: newItem.item, unidad: newItem.unidad, limite: limite > 0 ? limite : null }]);
-    setNewItem({ proveedor: "", item: "", unidad: "UND", limite: "" });
-    setShowNew(false);
+
+  const handleFile = (file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target.result);
+        const wb = XLSX.read(data, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+        const rows = aoa.slice(1).filter((r) => r && r.length && String(r[2] || "").trim());
+        if (rows.length === 0) {
+          setMsg({ kind: "error", text: "No se encontraron filas con artículos en ese archivo. Verifica que uses el formato descargado." });
+          return;
+        }
+        const { items: merged, updatedCount, addedCount } = mergeItemsFromExcel(items, rows, idPrefix);
+        onChange(merged);
+        setMsg({ kind: "ok", text: `Catálogo actualizado: ${updatedCount} artículo${updatedCount !== 1 ? "s" : ""} modificado${updatedCount !== 1 ? "s" : ""}, ${addedCount} nuevo${addedCount !== 1 ? "s" : ""}.` });
+      } catch (err) {
+        setMsg({ kind: "error", text: "No se pudo leer el archivo. Verifica que sea un .xlsx exportado desde este mismo panel." });
+      }
+    };
+    reader.readAsArrayBuffer(file);
   };
 
   return (
     <div>
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
         <div className="relative">
           <Search className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar artículo..." className="border border-stone-300 rounded-lg pl-9 pr-3 py-2 text-sm w-64 focus:outline-none focus:ring-2 focus:ring-amber-500" />
         </div>
-        <button onClick={() => setShowNew((s) => !s)} className="flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg px-3.5 py-2"><Plus className="w-4 h-4" /> Nuevo artículo</button>
-      </div>
-      <p className="text-xs text-stone-400 mb-3">El "Límite sugerido" es opcional. Si una solicitud pide más que ese número, se le pedirá al jefe de tienda/departamento que justifique la cantidad antes de poder enviar.</p>
-
-      {showNew && (
-        <div className="mb-4 border border-amber-200 bg-amber-50 rounded-lg p-4 grid grid-cols-1 sm:grid-cols-[1fr_2fr_5rem_6rem_auto] gap-2 items-center">
-          <input value={newItem.proveedor} onChange={(e) => setNewItem({ ...newItem, proveedor: e.target.value })} placeholder="Proveedor" className="border border-stone-300 rounded-md px-2 py-1.5 text-sm" />
-          <input value={newItem.item} onChange={(e) => setNewItem({ ...newItem, item: e.target.value })} placeholder="Nombre del artículo" className="border border-stone-300 rounded-md px-2 py-1.5 text-sm" />
-          <input value={newItem.unidad} onChange={(e) => setNewItem({ ...newItem, unidad: e.target.value })} placeholder="Unidad" className="border border-stone-300 rounded-md px-2 py-1.5 text-sm" />
-          <input type="number" min="0" value={newItem.limite} onChange={(e) => setNewItem({ ...newItem, limite: e.target.value })} placeholder="Límite" className="border border-stone-300 rounded-md px-2 py-1.5 text-sm" />
-          <button onClick={addItem} className="bg-stone-800 hover:bg-stone-900 text-white text-sm rounded-md px-3 py-1.5">Agregar</button>
+        <div className="flex gap-2">
+          <button onClick={() => downloadItemsExcel(items, brandLabel)}
+            className="flex items-center gap-1.5 border border-stone-300 text-stone-600 hover:bg-stone-50 text-sm font-medium rounded-lg px-3.5 py-2">
+            <Download className="w-4 h-4" /> Descargar catálogo (Excel)
+          </button>
+          <label className="flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg px-3.5 py-2 cursor-pointer">
+            <Upload className="w-4 h-4" /> Subir catálogo actualizado
+            <input type="file" accept=".xlsx" className="hidden" onChange={(e) => { if (e.target.files[0]) handleFile(e.target.files[0]); e.target.value = ""; }} />
+          </label>
         </div>
+      </div>
+
+      <div className="format-hint text-xs text-stone-500 bg-stone-50 border border-stone-200 rounded-lg px-3.5 py-2.5 mb-3">
+        Para modificar nombres, unidades o límites, o para agregar artículos nuevos: descarga el catálogo, edítalo en Excel (agrega filas nuevas al final si quieres artículos nuevos, deja el NÚMERO vacío en esas filas nuevas), y vuelve a subirlo. Los artículos que no toques en el Excel se quedan exactamente igual. El "Límite" es opcional — déjalo vacío para que ese artículo no pida justificación.
+      </div>
+      {msg && (
+        <p className={`text-xs rounded-lg px-3 py-2 mb-3 ${msg.kind === "ok" ? "bg-emerald-50 text-emerald-800 border border-emerald-200" : "bg-red-50 text-red-700 border border-red-200"}`}>{msg.text}</p>
       )}
 
       <div className="border border-stone-200 rounded-lg overflow-hidden">
-        <div className="grid grid-cols-[2.5rem_1fr_1fr_5rem_5rem_5rem] bg-stone-100 text-[11px] font-semibold text-stone-500 uppercase tracking-wide px-3 py-2">
+        <div className="grid grid-cols-[2.5rem_1fr_1fr_5rem_5rem_3rem] bg-stone-100 text-[11px] font-semibold text-stone-500 uppercase tracking-wide px-3 py-2">
           <span>#</span><span>Proveedor</span><span>Artículo</span><span>Unidad</span><span>Límite</span><span></span>
         </div>
         <div className="divide-y divide-stone-100 max-h-[500px] overflow-y-auto">
           {filtered.map((it) => (
-            <div key={it.id} className="grid grid-cols-[2.5rem_1fr_1fr_5rem_5rem_5rem] items-center px-3 py-2 text-sm">
+            <div key={it.id} className="grid grid-cols-[2.5rem_1fr_1fr_5rem_5rem_3rem] items-center px-3 py-2 text-sm">
               <span className="text-stone-400 font-mono text-xs">{it.numero}</span>
-              {editingId === it.id ? (
-                <>
-                  <input value={draft.proveedor} onChange={(e) => setDraft({ ...draft, proveedor: e.target.value })} className="border border-stone-300 rounded-md px-2 py-1 text-xs mr-2" />
-                  <input value={draft.item} onChange={(e) => setDraft({ ...draft, item: e.target.value })} className="border border-stone-300 rounded-md px-2 py-1 text-xs mr-2" />
-                  <input value={draft.unidad} onChange={(e) => setDraft({ ...draft, unidad: e.target.value })} className="border border-stone-300 rounded-md px-2 py-1 text-xs mr-2" />
-                  <input type="number" min="0" value={draft.limite} onChange={(e) => setDraft({ ...draft, limite: e.target.value })} placeholder="Sin límite" className="border border-stone-300 rounded-md px-2 py-1 text-xs" />
-                  <div className="flex gap-2 justify-end">
-                    <button onClick={() => saveEdit(it.id)} className="text-emerald-600 hover:text-emerald-800"><CheckCircle2 className="w-4 h-4" /></button>
-                    <button onClick={() => setEditingId(null)} className="text-stone-400 hover:text-stone-600"><X className="w-4 h-4" /></button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <span className="text-stone-500">{it.proveedor}</span>
-                  <span className="text-stone-800">{it.item}</span>
-                  <span className="text-stone-500">{it.unidad}</span>
-                  <span className="text-stone-500">{it.limite || <span className="text-stone-300">—</span>}</span>
-                  <div className="flex gap-3 justify-end">
-                    <button onClick={() => startEdit(it)} className="text-stone-400 hover:text-stone-700"><Pencil className="w-4 h-4" /></button>
-                    <button onClick={() => remove(it.id)} className="text-stone-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
-                  </div>
-                </>
-              )}
+              <span className="text-stone-500">{it.proveedor}</span>
+              <span className="text-stone-800">{it.item}</span>
+              <span className="text-stone-500">{it.unidad}</span>
+              <span className="text-stone-500">{it.limite || <span className="text-stone-300">—</span>}</span>
+              <div className="flex justify-end">
+                <button onClick={() => remove(it)} className="text-stone-400 hover:text-red-600" title="Eliminar"><Trash2 className="w-4 h-4" /></button>
+              </div>
             </div>
           ))}
           {filtered.length === 0 && <p className="px-3 py-6 text-center text-sm text-stone-400">Sin artículos.</p>}
