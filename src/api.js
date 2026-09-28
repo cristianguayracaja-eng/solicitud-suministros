@@ -31,6 +31,8 @@ async function apiSet(key, value) {
     body: JSON.stringify({ action: "set", key, value }),
   });
   if (!res.ok) throw new Error("set failed");
+  const data = await res.json().catch(() => null);
+  if (!data || data.error) throw new Error("set failed: " + (data && data.error));
   return true;
 }
 
@@ -48,6 +50,8 @@ async function apiDelete(key) {
     body: JSON.stringify({ action: "delete", key }),
   });
   if (!res.ok) throw new Error("delete failed");
+  const data = await res.json().catch(() => null);
+  if (!data || data.error) throw new Error("delete failed: " + (data && data.error));
   return true;
 }
 
@@ -107,4 +111,50 @@ export async function safeGetStrict(key, attempts = 4) {
     }
   }
   return { ok: false, error: lastError };
+}
+
+const wait_ = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function withRetry_(fn, attempts) {
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    try { return { ok: true, ...(await fn()) }; }
+    catch (e) { lastError = e; await wait_(400 * (i + 1) + Math.random() * 300); }
+  }
+  return { ok: false, error: lastError };
+}
+
+async function getJson_(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const data = await res.json();
+  if (!data || typeof data !== "object" || data.error) throw new Error(data && data.error);
+  return data;
+}
+
+// Varias claves en UNA sola petición (carga inicial). -> { ok, values: {clave: string|null} }
+export async function safeGetManyStrict(keys, attempts = 4) {
+  return withRetry_(async () => {
+    const data = await getJson_(`${API_URL}?action=getMany&keys=${encodeURIComponent(JSON.stringify(keys))}`);
+    if (!data.values) throw new Error("respuesta incompleta");
+    return { values: data.values };
+  }, attempts);
+}
+
+// Todos los registros con ese prefijo en UNA petición. -> { ok, items: [{key, value}] }
+export async function safeListValuesStrict(prefix, attempts = 3) {
+  return withRetry_(async () => {
+    const data = await getJson_(`${API_URL}?action=listValues&prefix=${encodeURIComponent(prefix || "")}`);
+    if (!Array.isArray(data.items)) throw new Error("respuesta incompleta");
+    return { items: data.items };
+  }, attempts);
+}
+
+// Verificación de correo hecha en el servidor. -> { ok, record: objeto|null }
+export async function safeFindByEmailStrict(prefix, email, attempts = 3) {
+  return withRetry_(async () => {
+    const data = await getJson_(`${API_URL}?action=findByEmail&prefix=${encodeURIComponent(prefix)}&email=${encodeURIComponent(email)}`);
+    if (!("found" in data)) throw new Error("respuesta incompleta");
+    return { record: data.found || null };
+  }, attempts);
 }
