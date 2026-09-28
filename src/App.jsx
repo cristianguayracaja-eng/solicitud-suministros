@@ -6,7 +6,7 @@ import {
   ChevronUp, Upload
 } from "lucide-react";
 import * as XLSX from "xlsx";
-import { safeGet, safeGetStrict, safeGetManyStrict, safeListValuesStrict, safeFindByEmailStrict, safeSet, safeList, safeDelete } from "./api.js";
+import { safeGet, safeGetStrict, safeSet, safeList, safeDelete } from "./api.js";
 
 /* ==================================================================== */
 /* DATOS BASE                                                            */
@@ -293,11 +293,11 @@ export default function App() {
         CONFIG_KEY, CARTIMEX_AREAS_KEY, CARTIMEX_ITEMS_KEY, "items-list",
         COMPUTRON_TIENDAS_KEY, COMPUTRON_ITEMS_OFICINA_KEY, COMPUTRON_ITEMS_LIMPIEZA_KEY,
       ];
-      const many = await safeGetManyStrict(keys);
+      const results = await Promise.all(keys.map((k) => safeGetStrict(k)));
       if (cancelled) return;
-      if (!many.ok) { setLoadError(true); return; }
+      if (results.some((r) => !r.ok)) { setLoadError(true); return; }
 
-      const [cfgRaw, areasRaw, cItemsRaw, legacyItemsRaw, tiendasRaw, ofcRaw, lmpRaw] = keys.map((k) => many.values[k] ?? null);
+      const [cfgRaw, areasRaw, cItemsRaw, legacyItemsRaw, tiendasRaw, ofcRaw, lmpRaw] = results.map((r) => r.value);
 
       // Si hay contenido pero no se puede interpretar (JSON dañado), tampoco
       // se sobrescribe: se trata como error, no como "vacío".
@@ -596,10 +596,14 @@ function useExistingCheck(format, periodSlug, entityId) {
 // importar qué departamento/tienda haya elegido esa vez.
 async function findSubmissionByEmail(format, periodSlug, correo) {
   const target = (correo || "").trim().toLowerCase();
-  if (!target) return { ok: true, rec: null };
-  // La búsqueda se hace en el servidor (1 sola petición). ok=false significa "no se pudo verificar".
-  const r = await safeFindByEmailStrict(`submission:${format}:${periodSlug}:`, target);
-  return r.ok ? { ok: true, rec: r.record } : { ok: false, rec: null };
+  if (!target) return null;
+  const keys = await safeList(`submission:${format}:${periodSlug}:`, true);
+  for (const k of keys) {
+    const raw = await safeGet(k, true);
+    const rec = parseJSON(raw, null);
+    if (rec && (rec.correo || "").trim().toLowerCase() === target) return rec;
+  }
+  return null;
 }
 
 function useEmailAlreadySubmitted(format, periodSlug, correo, emailValid) {
@@ -610,8 +614,8 @@ function useEmailAlreadySubmitted(format, periodSlug, correo, emailValid) {
     let cancelled = false;
     (async () => {
       setChecking(true);
-      const r = await findSubmissionByEmail(format, periodSlug, correo);
-      if (!cancelled) { setExisting(r.rec); setChecking(false); }
+      const found = await findSubmissionByEmail(format, periodSlug, correo);
+      if (!cancelled) { setExisting(found); setChecking(false); }
     })();
     return () => { cancelled = true; };
   }, [format, periodSlug, correo, emailValid]);
@@ -693,11 +697,6 @@ function ConfirmModal({ title, message, confirmLabel = "Confirmar y enviar", onC
       <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-5">
         <h3 className="text-base font-semibold text-stone-800">{title}</h3>
         <div className="text-sm text-stone-600 mt-2 leading-relaxed">{message}</div>
-        {loading && (
-          <p className="mt-3 flex items-center gap-2 text-xs font-medium text-stone-500">
-            <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Enviando tu solicitud, por favor espera y no cierres esta ventana...
-          </p>
-        )}
         <div className="flex gap-2 mt-5">
           <button onClick={onCancel} disabled={loading}
             className="flex-1 border border-stone-300 text-stone-600 text-sm font-medium rounded-lg py-2.5 hover:bg-stone-50 disabled:opacity-50">
@@ -705,7 +704,7 @@ function ConfirmModal({ title, message, confirmLabel = "Confirmar y enviar", onC
           </button>
           <button onClick={onConfirm} disabled={loading}
             className={`flex-1 ${t.primary} ${t.primaryHover} disabled:opacity-60 text-white text-sm font-medium rounded-lg py-2.5 transition-colors`}>
-            {loading ? (<span className="inline-flex items-center justify-center gap-2"><RefreshCw className="w-4 h-4 animate-spin" /> Enviando...</span>) : confirmLabel}
+            {loading ? "Enviando..." : confirmLabel}
           </button>
         </div>
       </div>
@@ -800,39 +799,30 @@ function CartimexForm({ config, areas, items, onGoAdmin }) {
   const handleReview = () => { if (validate()) setShowConfirm(true); };
 
   const confirmSubmit = async () => {
-    // Se marca "Enviando..." desde el primer instante (la verificación también tarda).
-    setSubmitting(true);
-    try {
-      // Verificación final justo antes de guardar, por si abrió dos pestañas a la vez.
-      const chk = await findSubmissionByEmail("CARTIMEX", config.periodSlug, correo);
-      if (!chk.ok) {
-        setShowConfirm(false);
-        setError("No se pudo verificar tu solicitud por un problema de conexión. Tus datos siguen aquí: vuelve a pulsar Enviar en unos segundos.");
-        return;
-      }
-      if (chk.rec) {
-        setShowConfirm(false);
-        setError("Ya enviaste una solicitud con este correo para este periodo.");
-        return;
-      }
-
-      const clean = {};
-      Object.entries(quantities).forEach(([k, v]) => { const n = parseInt(v, 10) || 0; if (n > 0) clean[k] = n; });
-      const cleanJust = {};
-      itemsOverLimit.forEach((it) => { const t = (justifications[it.id] || "").trim(); if (t) cleanJust[it.id] = t; });
-
-      const record = {
-        format: "CARTIMEX", period: config.periodSlug, periodLabel: config.periodLabel,
-        entity: areaId, entityLabel: areaLabel,
-        nombre: nombre.trim(), apellido: apellido.trim(), correo: correo.trim(),
-        quantities: clean, justifications: cleanJust, observaciones: observaciones.trim(), date: new Date().toISOString(),
-      };
-      const ok = await safeSet(submissionKey("CARTIMEX", config.periodSlug, areaId), JSON.stringify(record), true);
+    // Verificación final justo antes de guardar, por si abrió dos pestañas a la vez.
+    const dupe = await findSubmissionByEmail("CARTIMEX", config.periodSlug, correo);
+    if (dupe) {
       setShowConfirm(false);
-      if (ok) setDone(true); else setError("No se pudo guardar la solicitud. Intenta de nuevo.");
-    } finally {
-      setSubmitting(false);
+      setError("Ya enviaste una solicitud con este correo para este periodo.");
+      return;
     }
+
+    const clean = {};
+    Object.entries(quantities).forEach(([k, v]) => { const n = parseInt(v, 10) || 0; if (n > 0) clean[k] = n; });
+    const cleanJust = {};
+    itemsOverLimit.forEach((it) => { const t = (justifications[it.id] || "").trim(); if (t) cleanJust[it.id] = t; });
+
+    setSubmitting(true);
+    const record = {
+      format: "CARTIMEX", period: config.periodSlug, periodLabel: config.periodLabel,
+      entity: areaId, entityLabel: areaLabel,
+      nombre: nombre.trim(), apellido: apellido.trim(), correo: correo.trim(),
+      quantities: clean, justifications: cleanJust, observaciones: observaciones.trim(), date: new Date().toISOString(),
+    };
+    const ok = await safeSet(submissionKey("CARTIMEX", config.periodSlug, areaId), JSON.stringify(record), true);
+    setSubmitting(false);
+    setShowConfirm(false);
+    if (ok) setDone(true); else setError("No se pudo guardar la solicitud. Intenta de nuevo.");
   };
 
   if (done) return <DoneScreen entityLabel={areaLabel} periodLabel={config.periodLabel} total={total} />;
@@ -957,39 +947,29 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
   const handleReview = () => { if (validate()) setShowConfirm(true); };
 
   const confirmSubmit = async () => {
-    // Se marca "Enviando..." desde el primer instante (la verificación también tarda).
-    setSubmitting(true);
-    try {
-      // Verificación final justo antes de guardar, por si abrió dos pestañas a la vez.
-      const chk = await findSubmissionByEmail("COMPUTRON", config.periodSlug, correo);
-      if (!chk.ok) {
-        setShowConfirm(false);
-        setError("No se pudo verificar tu solicitud por un problema de conexión. Tus datos siguen aquí: vuelve a pulsar Enviar en unos segundos.");
-        return;
-      }
-      if (chk.rec) {
-        setShowConfirm(false);
-        setError("Ya enviaste una solicitud con este correo para este periodo.");
-        return;
-      }
-
-      const clean = {};
-      Object.entries(quantities).forEach(([k, v]) => { const n = parseInt(v, 10) || 0; if (n > 0) clean[k] = n; });
-      const cleanJust = {};
-      itemsOverLimit.forEach((it) => { const t = (justifications[it.id] || "").trim(); if (t) cleanJust[it.id] = t; });
-
-      const record = {
-        format: "COMPUTRON", period: config.periodSlug, periodLabel: config.periodLabel,
-        entity: tiendaId, entityLabel: tiendaLabel,
-        nombre: nombre.trim(), apellido: apellido.trim(), correo: correo.trim(),
-        quantities: clean, justifications: cleanJust, observaciones: observaciones.trim(), date: new Date().toISOString(),
-      };
-      const ok = await safeSet(submissionKey("COMPUTRON", config.periodSlug, tiendaId), JSON.stringify(record), true);
+    const dupe = await findSubmissionByEmail("COMPUTRON", config.periodSlug, correo);
+    if (dupe) {
       setShowConfirm(false);
-      if (ok) setDone(true); else setError("No se pudo guardar la solicitud. Intenta de nuevo.");
-    } finally {
-      setSubmitting(false);
+      setError("Ya enviaste una solicitud con este correo para este periodo.");
+      return;
     }
+
+    const clean = {};
+    Object.entries(quantities).forEach(([k, v]) => { const n = parseInt(v, 10) || 0; if (n > 0) clean[k] = n; });
+    const cleanJust = {};
+    itemsOverLimit.forEach((it) => { const t = (justifications[it.id] || "").trim(); if (t) cleanJust[it.id] = t; });
+
+    setSubmitting(true);
+    const record = {
+      format: "COMPUTRON", period: config.periodSlug, periodLabel: config.periodLabel,
+      entity: tiendaId, entityLabel: tiendaLabel,
+      nombre: nombre.trim(), apellido: apellido.trim(), correo: correo.trim(),
+      quantities: clean, justifications: cleanJust, observaciones: observaciones.trim(), date: new Date().toISOString(),
+    };
+    const ok = await safeSet(submissionKey("COMPUTRON", config.periodSlug, tiendaId), JSON.stringify(record), true);
+    setSubmitting(false);
+    setShowConfirm(false);
+    if (ok) setDone(true); else setError("No se pudo guardar la solicitud. Intenta de nuevo.");
   };
 
   if (done) return <DoneScreen entityLabel={tiendaLabel} periodLabel={config.periodLabel} total={total} />;
@@ -1210,15 +1190,9 @@ function InformeTab({ config, data }) {
   const fetchSubmissions = useCallback(async () => {
     if (!selectedPeriod) { setSubmissions([]); setLoading(false); return; }
     setLoading(true);
-    const r = await safeListValuesStrict(`submission:${format}:${selectedPeriod}:`);
-    if (!r.ok) {
-      // No se pudo leer: se conserva lo que ya se veía en pantalla (no se muestra "nadie envió").
-      setLoading(false);
-      window.alert("No se pudo actualizar el informe por un problema de conexión. Intenta de nuevo en unos segundos.");
-      return;
-    }
+    const keys = await safeList(`submission:${format}:${selectedPeriod}:`, true);
     const recs = [];
-    for (const it of r.items) { const rec = parseJSON(it.value, null); if (rec) recs.push(rec); }
+    for (const k of keys) { const raw = await safeGet(k, true); const rec = parseJSON(raw, null); if (rec) recs.push(rec); }
     setSubmissions(recs);
     setLoading(false);
   }, [format, selectedPeriod]);
