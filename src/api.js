@@ -16,8 +16,10 @@ if (!API_URL) {
 
 async function apiGet(key) {
   const res = await fetch(`${API_URL}?action=get&key=${encodeURIComponent(key)}`);
-  if (!res.ok) throw new Error("get failed");
+  if (!res.ok) throw new Error("get failed: HTTP " + res.status);
   const data = await res.json();
+  // Apps Script a veces responde 200 con un objeto de error: eso NO es "clave vacía".
+  if (!data || typeof data !== "object" || data.error) throw new Error("get failed: " + (data && data.error));
   return data.value ?? null; // string | null
 }
 
@@ -61,12 +63,15 @@ export async function safeGet(key, _shared) {
   }
 }
 export async function safeSet(key, value, _shared) {
-  try {
-    await apiSet(key, value);
-    return true;
-  } catch (e) {
-    return false;
+  for (let i = 0; i < 3; i++) {
+    try {
+      await apiSet(key, value);
+      return true;
+    } catch (e) {
+      await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+    }
   }
+  return false;
 }
 export async function safeList(prefix, _shared) {
   try {
@@ -82,4 +87,24 @@ export async function safeDelete(key, _shared) {
   } catch (e) {
     return false;
   }
+}
+
+// Lectura ESTRICTA: reintenta con espera creciente y distingue
+//   { ok: true,  value: string }  -> la clave existe
+//   { ok: true,  value: null }    -> la clave de verdad NO existe (vacía)
+//   { ok: false, error }          -> no se pudo leer (conexión, 403/500, etc.)
+// Úsala siempre que vayas a decidir "sembrar valores por defecto" o
+// a hacer leer-modificar-escribir. Nunca sobrescribas nada si ok === false.
+export async function safeGetStrict(key, attempts = 4) {
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const value = await apiGet(key);
+      return { ok: true, value };
+    } catch (e) {
+      lastError = e;
+      await new Promise((r) => setTimeout(r, 400 * (i + 1) + Math.random() * 300));
+    }
+  }
+  return { ok: false, error: lastError };
 }
