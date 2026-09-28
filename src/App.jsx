@@ -6,7 +6,7 @@ import {
   ChevronUp, Upload
 } from "lucide-react";
 import * as XLSX from "xlsx";
-import { safeGet, safeSet, safeList, safeDelete } from "./api.js";
+import { safeGet, safeGetStrict, safeSet, safeList, safeDelete } from "./api.js";
 
 /* ==================================================================== */
 /* DATOS BASE                                                            */
@@ -249,6 +249,21 @@ function LoadingScreen() {
   );
 }
 
+function LoadErrorScreen({ onRetry }) {
+  return (
+    <div className="min-h-[500px] flex items-center justify-center bg-stone-50 px-4">
+      <div className="flex flex-col items-center gap-3 text-center max-w-sm">
+        <AlertCircle className="w-7 h-7 text-amber-600" />
+        <p className="text-sm font-semibold text-stone-800">No se pudo conectar con el servidor.</p>
+        <p className="text-xs text-stone-500">Tus datos están a salvo: no se modificó nada. Vuelve a intentarlo en unos segundos.</p>
+        <button onClick={onRetry} className="mt-1 inline-flex items-center gap-2 rounded-lg bg-stone-800 px-4 py-2 text-sm font-medium text-white hover:bg-stone-700">
+          <RefreshCw className="w-4 h-4" /> Reintentar
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ==================================================================== */
 /* APP                                                                    */
 /* ==================================================================== */
@@ -263,23 +278,43 @@ export default function App() {
   const [computronItemsLimpieza, setComputronItemsLimpieza] = useState([]);
   const [view, setView] = useState("form");
 
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      // Todas las lecturas iniciales en paralelo (antes eran 6-7 peticiones
-      // en fila, una esperando a la otra — esto acelera bastante la carga).
-      const [cfgRaw, areasRaw, cItemsRaw, legacyItemsRaw, tiendasRaw, ofcRaw, lmpRaw] = await Promise.all([
-        safeGet(CONFIG_KEY, true),
-        safeGet(CARTIMEX_AREAS_KEY, true),
-        safeGet(CARTIMEX_ITEMS_KEY, true),
-        safeGet("items-list", true), // migración desde versión antigua
-        safeGet(COMPUTRON_TIENDAS_KEY, true),
-        safeGet(COMPUTRON_ITEMS_OFICINA_KEY, true),
-        safeGet(COMPUTRON_ITEMS_LIMPIEZA_KEY, true),
-      ]);
+      setLoadError(false);
+      setLoading(true);
+
+      // Lecturas ESTRICTAS (con reintentos). Si CUALQUIERA falla, no se
+      // escribe nada: se muestra pantalla de error con botón Reintentar.
+      const keys = [
+        CONFIG_KEY, CARTIMEX_AREAS_KEY, CARTIMEX_ITEMS_KEY, "items-list",
+        COMPUTRON_TIENDAS_KEY, COMPUTRON_ITEMS_OFICINA_KEY, COMPUTRON_ITEMS_LIMPIEZA_KEY,
+      ];
+      const results = await Promise.all(keys.map((k) => safeGetStrict(k)));
+      if (cancelled) return;
+      if (results.some((r) => !r.ok)) { setLoadError(true); return; }
+
+      const [cfgRaw, areasRaw, cItemsRaw, legacyItemsRaw, tiendasRaw, ofcRaw, lmpRaw] = results.map((r) => r.value);
+
+      // Si hay contenido pero no se puede interpretar (JSON dañado), tampoco
+      // se sobrescribe: se trata como error, no como "vacío".
+      const parseStrict = (raw) => {
+        if (raw == null || raw === "") return { empty: true, value: null };
+        try { const v = JSON.parse(raw); return v == null ? { empty: true, value: null } : { empty: false, value: v }; }
+        catch { return { corrupt: true }; }
+      };
+      const parsed = [cfgRaw, areasRaw, cItemsRaw, legacyItemsRaw, tiendasRaw, ofcRaw, lmpRaw].map(parseStrict);
+      if (parsed.some((p) => p.corrupt)) { setLoadError(true); return; }
+      const [pCfg, pAreas, pCItems, pLegacy, pTiendas, pOfc, pLmp] = parsed;
+
+      // Solo llegamos aquí con lectura confirmada. "empty" = la clave de verdad no existe.
 
       // config (con migración desde versión anterior de una sola marca)
-      let cfg = parseJSON(cfgRaw, null);
-      if (!cfg) {
+      let cfg = pCfg.value;
+      if (pCfg.empty) {
         cfg = { activeFormat: "", periodSlug: "", periodLabel: "", periodDeadline: "", adminPassword: DEFAULT_PASSWORD };
         await safeSet(CONFIG_KEY, JSON.stringify(cfg), true);
       } else if (cfg.activeFormat === undefined) {
@@ -291,42 +326,42 @@ export default function App() {
         };
         await safeSet(CONFIG_KEY, JSON.stringify(cfg), true);
       }
-      setConfig(cfg);
 
       // cartimex areas
-      let areas = parseJSON(areasRaw, null);
-      if (!areas) { areas = CARTIMEX_AREAS_DEFAULT; await safeSet(CARTIMEX_AREAS_KEY, JSON.stringify(areas), true); }
-      setCartimexAreas(areas);
+      let areas = pAreas.value;
+      if (pAreas.empty) { areas = CARTIMEX_AREAS_DEFAULT; await safeSet(CARTIMEX_AREAS_KEY, JSON.stringify(areas), true); }
 
       // cartimex items (con migración desde 'items-list')
-      let citems = parseJSON(cItemsRaw, null);
-      if (!citems) {
-        citems = parseJSON(legacyItemsRaw, null) || CARTIMEX_ITEMS_DEFAULT;
+      let citems = pCItems.value;
+      if (pCItems.empty) {
+        citems = pLegacy.value || CARTIMEX_ITEMS_DEFAULT;
         await safeSet(CARTIMEX_ITEMS_KEY, JSON.stringify(citems), true);
       }
-      setCartimexItems(citems);
 
       // computron tiendas
-      let tiendas = parseJSON(tiendasRaw, null);
-      if (!tiendas) {
+      let tiendas = pTiendas.value;
+      if (pTiendas.empty) {
         tiendas = COMPUTRON_TIENDAS_LABELS.map((label) => ({ id: slugify(label), label }));
         await safeSet(COMPUTRON_TIENDAS_KEY, JSON.stringify(tiendas), true);
       }
+
+      // computron items oficina / limpieza
+      let ofc = pOfc.value;
+      if (pOfc.empty) { ofc = COMPUTRON_ITEMS_OFICINA_DEFAULT; await safeSet(COMPUTRON_ITEMS_OFICINA_KEY, JSON.stringify(ofc), true); }
+      let lmp = pLmp.value;
+      if (pLmp.empty) { lmp = COMPUTRON_ITEMS_LIMPIEZA_DEFAULT; await safeSet(COMPUTRON_ITEMS_LIMPIEZA_KEY, JSON.stringify(lmp), true); }
+
+      if (cancelled) return;
+      setConfig(cfg);
+      setCartimexAreas(areas);
+      setCartimexItems(citems);
       setComputronTiendas(tiendas);
-
-      // computron items oficina
-      let ofc = parseJSON(ofcRaw, null);
-      if (!ofc) { ofc = COMPUTRON_ITEMS_OFICINA_DEFAULT; await safeSet(COMPUTRON_ITEMS_OFICINA_KEY, JSON.stringify(ofc), true); }
       setComputronItemsOficina(ofc);
-
-      // computron items limpieza
-      let lmp = parseJSON(lmpRaw, null);
-      if (!lmp) { lmp = COMPUTRON_ITEMS_LIMPIEZA_DEFAULT; await safeSet(COMPUTRON_ITEMS_LIMPIEZA_KEY, JSON.stringify(lmp), true); }
       setComputronItemsLimpieza(lmp);
-
       setLoading(false);
     })();
-  }, []);
+    return () => { cancelled = true; };
+  }, [loadAttempt]);
 
   const persist = useCallback((setter, key) => async (next) => {
     setter(next);
@@ -340,6 +375,7 @@ export default function App() {
   const persistComputronItemsOficina = persist(setComputronItemsOficina, COMPUTRON_ITEMS_OFICINA_KEY);
   const persistComputronItemsLimpieza = persist(setComputronItemsLimpieza, COMPUTRON_ITEMS_LIMPIEZA_KEY);
 
+  if (loadError) return <LoadErrorScreen onRetry={() => setLoadAttempt((n) => n + 1)} />;
   if (loading) return <LoadingScreen />;
 
   const dataBundle = {
@@ -1691,9 +1727,12 @@ function ConfigTab({ config, data, onConfigChange }) {
   const [respondedCount, setRespondedCount] = useState(null);
   const [periodsList, setPeriodsList] = useState([]);
 
+  const [periodsOk, setPeriodsOk] = useState(false); // true solo si la lista se leyó con certeza
   const fetchPeriods = useCallback(async () => {
-    const list = parseJSON(await safeGet(PERIODS_KEY, true), []);
-    setPeriodsList(list);
+    const r = await safeGetStrict(PERIODS_KEY);
+    if (!r.ok) { setPeriodsOk(false); return; }
+    setPeriodsList(parseJSON(r.value, []));
+    setPeriodsOk(true);
   }, []);
 
   useEffect(() => { fetchPeriods(); }, [fetchPeriods]);
@@ -1712,18 +1751,26 @@ function ConfigTab({ config, data, onConfigChange }) {
   const deadlinePassed = isDeadlinePassed(config);
 
   const persistPeriodsList = async (list) => {
-    await safeSet(PERIODS_KEY, JSON.stringify(list), true);
-    setPeriodsList(list);
+    const ok = await safeSet(PERIODS_KEY, JSON.stringify(list), true);
+    if (ok) { setPeriodsList(list); setPeriodsOk(true); }
+    else setMsg("No se pudo guardar el historial de periodos. Inténtalo de nuevo.");
+  };
+  const requirePeriodsOk = () => {
+    if (periodsOk) return true;
+    setMsg("No se pudo leer el historial de periodos (error de conexión). Espera unos segundos y vuelve a intentarlo; no se modificó nada.");
+    fetchPeriods();
+    return false;
   };
 
   const openNewPeriod = async () => {
     if (!periodLabel.trim()) return;
     const slug = slugify(periodLabel) || `PERIODO-${Date.now()}`;
+    const pr = await safeGetStrict(PERIODS_KEY);
+    if (!pr.ok) { setMsg("No se pudo leer la lista de periodos (error de conexión). Inténtalo de nuevo; no se modificó nada."); return; }
     const next = { ...config, activeFormat: newFormat, periodSlug: slug, periodLabel: periodLabel.trim(), periodDeadline: periodDeadline || "" };
     await onConfigChange(next);
     setEditDeadlineValue(periodDeadline || "");
-
-    const list = parseJSON(await safeGet(PERIODS_KEY, true), []);
+    const list = parseJSON(pr.value, []);
     const idx = list.findIndex((p) => p.format === newFormat && p.slug === slug);
     const entry = { format: newFormat, slug, label: periodLabel.trim(), deadline: periodDeadline || "" };
     if (idx === -1) list.push(entry); else list[idx] = entry;
@@ -1746,6 +1793,7 @@ function ConfigTab({ config, data, onConfigChange }) {
   };
 
   const updateDeadline = async () => {
+    if (!requirePeriodsOk()) return;
     await onConfigChange({ ...config, periodDeadline: editDeadlineValue || "" });
     const list = periodsList.map((p) =>
       p.format === config.activeFormat && p.slug === config.periodSlug ? { ...p, deadline: editDeadlineValue || "" } : p
@@ -1759,6 +1807,7 @@ function ConfigTab({ config, data, onConfigChange }) {
     const confirmMsg = isActive
       ? `"${p.label}" es el periodo ACTUALMENTE ABIERTO. Se eliminará junto con todas sus solicitudes y el formulario quedará cerrado. ¿Continuar?`
       : `Se eliminará el periodo "${p.label}" y TODAS sus solicitudes enviadas. Esta acción no se puede deshacer. ¿Continuar?`;
+    if (!requirePeriodsOk()) return;
     if (!window.confirm(confirmMsg)) return;
 
     const keys = await safeList(`submission:${p.format}:${p.slug}:`, true);
