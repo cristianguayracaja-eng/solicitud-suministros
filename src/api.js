@@ -31,6 +31,8 @@ async function apiSet(key, value) {
     body: JSON.stringify({ action: "set", key, value }),
   });
   if (!res.ok) throw new Error("set failed");
+  const data = await res.json().catch(() => null);
+  if (!data || data.error) throw new Error("set failed: " + (data && data.error));
   return true;
 }
 
@@ -48,6 +50,8 @@ async function apiDelete(key) {
     body: JSON.stringify({ action: "delete", key }),
   });
   if (!res.ok) throw new Error("delete failed");
+  const data = await res.json().catch(() => null);
+  if (!data || data.error) throw new Error("delete failed: " + (data && data.error));
   return true;
 }
 
