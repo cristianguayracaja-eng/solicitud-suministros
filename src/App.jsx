@@ -933,8 +933,11 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
 
   const { checking, existing } = useExistingCheck("COMPUTRON", config.periodSlug, tiendaId);
 
+  // En Computron una misma persona puede llevar varias tiendas (ej. supervisor
+  // de 4 tiendas), por eso aquí NO se bloquea por correo repetido: solo se
+  // bloquea que una MISMA TIENDA reciba dos solicitudes en el mismo periodo
+  // (control ya aplicado más abajo con useExistingCheck, por tiendaId).
   const infoComplete = nombre.trim() && apellido.trim() && isCompanyEmail(correo, COMPUTRON_EMAIL_DOMAIN);
-  const { checking: checkingEmail, existing: existingByEmail } = useEmailAlreadySubmitted("COMPUTRON", config.periodSlug, correo, infoComplete);
 
   const setQty = (id, val) => {
     const n = val === "" ? "" : Math.max(0, parseInt(val, 10) || 0);
@@ -951,7 +954,6 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
     setError("");
     if (!nombre.trim() || !apellido.trim()) { setError("Ingresa tu nombre y apellido."); return false; }
     if (!isCompanyEmail(correo, COMPUTRON_EMAIL_DOMAIN)) { setError(`Ingresa tu correo institucional, terminado en @${COMPUTRON_EMAIL_DOMAIN}.`); return false; }
-    if (existingByEmail) { setError("Ya enviaste una solicitud con este correo para este periodo."); return false; }
     if (!tiendaId) { setError("Selecciona tu tienda."); return false; }
     const any = Object.values(quantities).some((v) => (parseInt(v, 10) || 0) > 0);
     if (!any) { setError("Ingresa al menos una cantidad mayor a 0 (Oficina o Limpieza)."); return false; }
@@ -966,16 +968,20 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
     // Se marca "Enviando..." desde el primer instante (la verificación también tarda).
     setSubmitting(true);
     try {
-      // Verificación final justo antes de guardar, por si abrió dos pestañas a la vez.
-      const chk = await findSubmissionByEmail("COMPUTRON", config.periodSlug, correo);
-      if (!chk.ok) {
+      // Verificación final justo antes de guardar, por si abrió dos pestañas a la vez:
+      // se revisa la TIENDA (no el correo), con una sola lectura directa (rápida).
+      let already;
+      try {
+        const raw = await safeGet(submissionKey("COMPUTRON", config.periodSlug, tiendaId), true);
+        already = parseJSON(raw, null);
+      } catch (e) {
         setShowConfirm(false);
-        setError("No se pudo verificar tu solicitud por un problema de conexión. Tus datos siguen aquí: vuelve a pulsar Enviar en unos segundos.");
+        setError("No se pudo verificar la solicitud por un problema de conexión. Tus datos siguen aquí: vuelve a pulsar Enviar en unos segundos.");
         return;
       }
-      if (chk.rec) {
+      if (already) {
         setShowConfirm(false);
-        setError("Ya enviaste una solicitud con este correo para este periodo.");
+        setError(`${tiendaLabel} ya tiene una solicitud enviada para este periodo.`);
         return;
       }
 
@@ -1001,7 +1007,7 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
   if (done) return <DoneScreen entityLabel={tiendaLabel} periodLabel={config.periodLabel} total={total} />;
 
   const theme = THEME.COMPUTRON;
-  const canPickEntity = infoComplete && !checkingEmail && !existingByEmail;
+  const canPickEntity = infoComplete;
   const showItems = canPickEntity && !checking && tiendaId && !existing;
 
   return (
@@ -1010,8 +1016,6 @@ function ComputronForm({ config, tiendas, itemsOficina, itemsLimpieza, onGoAdmin
       <div className="px-6 pt-6">
         <PersonalInfoFields nombre={nombre} apellido={apellido} correo={correo} setNombre={setNombre} setApellido={setApellido} setCorreo={setCorreo} theme={theme} emailDomain={COMPUTRON_EMAIL_DOMAIN} />
 
-        {infoComplete && checkingEmail && <p className="text-xs text-stone-400 mt-3">Verificando tu correo...</p>}
-        {infoComplete && !checkingEmail && existingByEmail && <AlreadySubmittedByEmailBanner existing={existingByEmail} />}
 
         {canPickEntity && (
           <>
