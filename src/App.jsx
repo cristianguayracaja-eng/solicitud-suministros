@@ -670,6 +670,13 @@ function DoneScreen({ entityLabel, periodLabel, total }) {
         <span className="font-medium text-stone-700">{periodLabel}</span> quedó registrada.
       </p>
       <p className="text-xs text-stone-400 mt-1">Total de unidades solicitadas: {total}</p>
+      <button
+        type="button"
+        onClick={() => window.location.reload()}
+        className="mt-8 inline-flex items-center gap-2 border border-stone-300 text-stone-600 text-sm font-medium rounded-lg px-5 py-2.5 hover:bg-stone-50 transition-colors"
+      >
+        <ArrowLeft className="w-4 h-4" /> Volver al inicio
+      </button>
     </div>
   );
 }
